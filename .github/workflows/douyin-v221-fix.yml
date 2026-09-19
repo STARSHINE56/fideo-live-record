@@ -19,10 +19,6 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # ============================================================
-      # 1. 从已经成功构建过的 V2.1 测试分支开始
-      # ============================================================
-
       - name: Checkout Douyin V2.1 source
         uses: actions/checkout@v4
         with:
@@ -34,18 +30,10 @@ jobs:
         run: |
           git switch -C douyin-v2.2-test
 
-      # ============================================================
-      # 2. Python
-      # ============================================================
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      # ============================================================
-      # 3. 一次性修改源码
-      # ============================================================
 
       - name: Apply V2.2.1 source fixes
         shell: bash
@@ -86,7 +74,7 @@ jobs:
 
 
           # ========================================================
-          # A. 修复抖音解析器
+          # A. Douyin parser
           # ========================================================
 
           douyin_path = (
@@ -98,11 +86,7 @@ jobs:
           )
 
 
-          # --------------------------------------------------------
-          # A1. 登录 Cookie 只取 ttwid
-          # 避免把完整登录 Cookie 发到直播解析接口
-          # --------------------------------------------------------
-
+          # Only keep ttwid from login Cookie
           old_cookie_fn = """function getCookieWithTtwid(cookie) {
             if (
               cookie &&
@@ -121,7 +105,7 @@ jobs:
 
             const match =
               String(cookie).match(
-                /(?:^|;\\\\s*)ttwid=([^;]+)/
+                /(?:^|;\\s*)ttwid=([^;]+)/
               )
 
             if (!match?.[1]) {
@@ -146,10 +130,7 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # A2. getDesktopData 增加 signed 参数
-          # --------------------------------------------------------
-
+          # getDesktopData signed option
           old_signature = """async function getDesktopData(
             roomUrl,
             others = {}
@@ -173,10 +154,7 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # A3. A-Bogus 改为按需使用
-          # --------------------------------------------------------
-
+          # A-Bogus only when signed = true
           old_sign_block = """  const query =
               params.toString()
 
@@ -226,10 +204,6 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # A4. 加入短链解析 + 双 Web API 兜底
-          # --------------------------------------------------------
-
           desktop_marker = (
               "async function "
               "baseGetDesktopDouYinLiveUrlsPlugin("
@@ -243,6 +217,7 @@ jobs:
               raise RuntimeError(
                   "Desktop parser marker not found"
               )
+
 
           helpers = r"""
           async function resolveDouyinLiveUrl(
@@ -515,10 +490,6 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # A5. Desktop 解析函数改成双 Web API
-          # --------------------------------------------------------
-
           old_desktop_logic = """  const data =
               await getDesktopData(
                 roomUrl,
@@ -550,12 +521,7 @@ jobs:
               )
 
 
-          # --------------------------------------------------------
-          # A6. 替换直播 URL 总路由
-          # live / v.douyin 都统一解析成 live.douyin.com
-          # 不再错误进入 Mobile fallback
-          # --------------------------------------------------------
-
+          # Replace main Douyin routing.
           router_start = douyin.find(
               "async function "
               "baseGetDouYinLiveUrlsPlugin("
@@ -600,10 +566,6 @@ jobs:
               douyin[router_end:]
           )
 
-
-          # --------------------------------------------------------
-          # A7. 房间信息也统一走 Web API
-          # --------------------------------------------------------
 
           info_start = douyin.find(
               "async function "
@@ -671,7 +633,7 @@ jobs:
 
 
           # ========================================================
-          # B. 日志不再输出完整直播地址
+          # B. Do not log full stream URLs
           # ========================================================
 
           crawler_path = (
@@ -697,13 +659,9 @@ jobs:
               crawler
           )
 
-          print(
-              "[OK] crawler log sanitized"
-          )
-
 
           # ========================================================
-          # C. 更新检查地址
+          # C. Update addresses
           # ========================================================
 
           main_path = (
@@ -761,13 +719,9 @@ jobs:
               app
           )
 
-          print(
-              "[OK] update URLs fixed"
-          )
-
 
           # ========================================================
-          # D. package.json 版本 / 项目地址
+          # D. package.json
           # ========================================================
 
           package_path = Path(
@@ -814,7 +768,7 @@ jobs:
 
 
           # ========================================================
-          # E. package-lock.json 版本同步
+          # E. package-lock version
           # ========================================================
 
           lock_path = Path(
@@ -859,13 +813,9 @@ jobs:
                   encoding="utf-8"
               )
 
-          print(
-              f"[OK] version changed to {version}"
-          )
-
 
           # ========================================================
-          # F. electron-builder 更新来源
+          # F. electron-builder publish target
           # ========================================================
 
           builder_path = (
@@ -912,16 +862,12 @@ jobs:
               builder
           )
 
-          print(
-              "[OK] builder publish target fixed"
-          )
-
 
           # ========================================================
-          # G. 最终源码检查
+          # G. Verify
           # ========================================================
 
-          required_checks = {
+          checks = {
               douyin_path: [
                   "resolveDouyinLiveUrl",
                   "getDesktopRoomWithFallback",
@@ -946,16 +892,14 @@ jobs:
                   )
               ],
 
-              "electron-builder.yml": [
+              builder_path: [
                   "provider: github",
                   "owner: STARSHINE56",
                   "repo: fideo-live-record"
               ]
           }
 
-          for file_path, values in (
-              required_checks.items()
-          ):
+          for file_path, values in checks.items():
               source = read(
                   file_path
               )
@@ -963,8 +907,7 @@ jobs:
               for value in values:
                   if value not in source:
                       raise RuntimeError(
-                          f"{file_path}: "
-                          f"missing {value}"
+                          f"{file_path}: missing {value}"
                       )
 
 
@@ -983,38 +926,27 @@ jobs:
               != version
           ):
               raise RuntimeError(
-                  "package.json version mismatch"
+                  "package version mismatch"
               )
 
 
           print("")
           print(
-              "================================="
+              "V2.2.1 source patch completed"
           )
-          print(
-              "V2.2.1 source patch completed."
-          )
+
           print(
               f"Version: {version}"
-          )
-          print(
-              "================================="
           )
           PY
 
           python "$RUNNER_TEMP/apply_v221.py"
-
-      # ============================================================
-      # 4. 检查文件修改结果
-      # ============================================================
 
       - name: Verify source changes
         shell: bash
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
-          echo "Checking Douyin parser..."
-
           grep -q \
             "resolveDouyinLiveUrl" \
             src/main/crawler/plugins/douyin.js
@@ -1031,8 +963,6 @@ jobs:
             "Douyin A-Bogus parser success" \
             src/main/crawler/plugins/douyin.js
 
-          echo "Checking update URLs..."
-
           grep -q \
             "STARSHINE56/fideo-live-record/releases/latest" \
             src/main/index.ts
@@ -1041,7 +971,17 @@ jobs:
             "STARSHINE56/fideo-live-record/releases/latest" \
             src/renderer/src/App.tsx
 
-          echo "Checking version..."
+          grep -q \
+            "provider: github" \
+            electron-builder.yml
+
+          grep -q \
+            "owner: STARSHINE56" \
+            electron-builder.yml
+
+          grep -q \
+            "repo: fideo-live-record" \
+            electron-builder.yml
 
           node -e "
           const p = require('./package.json');
@@ -1059,25 +999,7 @@ jobs:
           );
           "
 
-          echo "Checking builder publish..."
-
-          grep -q \
-            "provider: github" \
-            electron-builder.yml
-
-          grep -q \
-            "owner: STARSHINE56" \
-            electron-builder.yml
-
-          grep -q \
-            "repo: fideo-live-record" \
-            electron-builder.yml
-
           echo "All source checks passed."
-
-      # ============================================================
-      # 5. Node
-      # ============================================================
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -1091,37 +1013,17 @@ jobs:
           node --version
           npm --version
 
-      # ============================================================
-      # 6. 依赖
-      # ============================================================
-
       - name: Install dependencies
         run: npm ci
-
-      # ============================================================
-      # 7. TypeScript 检查
-      # ============================================================
 
       - name: TypeScript check
         run: npm run typecheck
 
-      # ============================================================
-      # 8. 正式构建源码
-      # ============================================================
-
       - name: Build Electron app
         run: npm run build
 
-      # ============================================================
-      # 9. Windows x64
-      # ============================================================
-
       - name: Package Windows x64
-        run: npx electron-builder --win nsis --x64
-
-      # ============================================================
-      # 10. 检查生成的安装包和版本
-      # ============================================================
+        run: npx electron-builder --win nsis --x64 --publish never
 
       - name: Verify Windows installer
         shell: pwsh
@@ -1172,11 +1074,6 @@ jobs:
               Length,
               FullName
 
-      # ============================================================
-      # 11. 提交到测试分支
-      # main 不动
-      # ============================================================
-
       - name: Commit tested source
         shell: bash
         run: |
@@ -1210,10 +1107,6 @@ jobs:
             origin \
             douyin-v2.2-test
 
-      # ============================================================
-      # 12. 上传测试安装包
-      # ============================================================
-
       - name: Upload Windows x64 installer
         uses: actions/upload-artifact@v4
         with:
@@ -1221,10 +1114,6 @@ jobs:
           path: dist/*-x64.exe
           if-no-files-found: error
           retention-days: 7
-
-      # ============================================================
-      # 13. Summary
-      # ============================================================
 
       - name: Build summary
         if: always()
@@ -1244,12 +1133,13 @@ jobs:
             echo "- Douyin short-link resolver"
             echo "- Unsigned Web API first"
             echo "- A-Bogus fallback"
-            echo "- Removed incorrect mobile fallback for live.douyin.com"
-            echo "- Update check points to STARSHINE56/fideo-live-record"
-            echo "- Release detail URL fixed"
+            echo "- Removed incorrect mobile fallback"
+            echo "- Update API changed to STARSHINE56/fideo-live-record"
+            echo "- Update detail URL fixed"
             echo "- package.json homepage/repository fixed"
-            echo "- electron-builder publish source fixed"
             echo "- Version synchronized"
+            echo "- GitHub publish target configured"
+            echo "- Test packaging uses --publish never"
             echo "- Full stream URLs removed from crawler debug log"
             echo "- Windows x64 test installer"
           } >> "$GITHUB_STEP_SUMMARY"
