@@ -8,6 +8,8 @@ import {
   FRPC_PROCESS_ERROR,
   GET_LIVE_URLS,
   GET_ROOM_INFO,
+    START_STREAM_PREVIEW,
+    STOP_STREAM_PREVIEW,
   MAXIMIZE_RESTORE_WINDOW,
   MINIMIZE_WINDOW,
   NAV_BY_DEFAULT_BROWSER,
@@ -36,6 +38,22 @@ const api = {
     ipcRenderer.invoke(GET_LIVE_URLS, info),
   getRoomInfo: (info: { roomUrl: string; proxy?: string; cookie?: string }) =>
     ipcRenderer.invoke(GET_ROOM_INFO, info),
+
+    startStreamPreview: (info: {
+      streamUrl: string
+      roomUrl: string
+      proxy?: string
+      cookie?: string
+    }) =>
+      ipcRenderer.invoke(
+        START_STREAM_PREVIEW,
+        info
+      ),
+
+    stopStreamPreview: () =>
+      ipcRenderer.invoke(
+        STOP_STREAM_PREVIEW
+      ),
   navByDefaultBrowser: (url: string) => ipcRenderer.invoke(NAV_BY_DEFAULT_BROWSER, url),
   startStreamRecord: (streamConfig: string) =>
     ipcRenderer.invoke(START_STREAM_RECORD, streamConfig),

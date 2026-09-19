@@ -38,6 +38,7 @@ interface OperationBarProps {
 
 export default function OperationBar(props: OperationBarProps) {
   const timer = useRef<NodeJS.Timeout>()
+    const liveNotifiedRef = useRef(false)
   const { streamConfig } = props
   const { t } = useTranslation()
   const defaultSettingsConfig = useDefaultSettingsStore((state) => state.defaultSettingsConfig)
@@ -59,6 +60,189 @@ export default function OperationBar(props: OperationBarProps) {
     await removeStreamConfig(streamConfig.id)
     setDeleteDialogOpen(false)
   }
+
+
+  const scheduleMonitorOnly = () => {
+    if (timer.current) {
+      clearTimeout(
+        timer.current
+      )
+    }
+
+    timer.current =
+      setTimeout(
+        () => {
+          void handleMonitorOnly(
+            false
+          )
+        },
+
+        1000 *
+          streamConfig.interval
+      )
+  }
+
+  const handleMonitorOnly = async (
+    isFirst = true
+  ) => {
+    if (isFirst) {
+      liveNotifiedRef.current =
+        false
+
+      await updateStreamConfig(
+        {
+          ...streamConfig,
+          status:
+            StreamStatus.MONITORING
+        },
+
+        streamConfig.id
+      )
+    }
+
+    const result =
+      await window.api
+        .getLiveUrls({
+          roomUrl:
+            streamConfig.roomUrl,
+
+          cookie:
+            streamConfig.cookie,
+
+          proxy:
+            streamConfig.proxy,
+
+          title:
+            streamConfig.title
+        })
+        .catch(() => ({
+          code:
+            UNKNOWN_CODE,
+
+          liveUrls:
+            [] as string[]
+        }))
+
+    const latest =
+      useStreamConfigStore
+        .getState()
+        .streamConfigList
+        .find(
+          (item) =>
+            item.id ===
+            streamConfig.id
+        )
+
+    if (
+      !latest ||
+      latest.status ===
+        StreamStatus.NOT_STARTED
+    ) {
+      return
+    }
+
+    if (
+      result.code ===
+        SUCCESS_CODE &&
+      Array.isArray(
+        result.liveUrls
+      ) &&
+      result.liveUrls.length >
+        0
+    ) {
+      if (
+        !liveNotifiedRef.current
+      ) {
+        liveNotifiedRef.current =
+          true
+
+        const message =
+          t(
+            'stream_config.live_detected_notify',
+            {
+              title:
+                streamConfig.title
+            }
+          )
+
+        window.api.showNotification(
+          t(
+            'stream_config.live_detected'
+          ),
+          message
+        )
+
+        toast({
+          title:
+            streamConfig.title,
+
+          description:
+            t(
+              'stream_config.live_detected'
+            )
+        })
+
+        if (
+          defaultSettingsConfig
+            .xizhiKey
+        ) {
+          useXizhiToPushNotification({
+            key:
+              defaultSettingsConfig
+                .xizhiKey,
+
+            title:
+              streamConfig.title,
+
+            content:
+              t(
+                'stream_config.live_detected'
+              )
+          })
+        }
+      }
+
+      scheduleMonitorOnly()
+
+      return
+    }
+
+    if (
+      result.code ===
+        CRAWLER_ERROR_CODE.NOT_URLS ||
+      result.code ===
+        UNKNOWN_CODE
+    ) {
+      liveNotifiedRef.current =
+        false
+
+      scheduleMonitorOnly()
+
+      return
+    }
+
+    if (isFirst) {
+      const errMessage =
+        crawlerErrorCodeToI18nMessage(
+          result.code,
+          'error.get_line.'
+        )
+
+      toast({
+        title:
+          streamConfig.title,
+
+        description:
+          t(errMessage),
+
+        variant:
+          'destructive'
+      })
+    }
+
+    scheduleMonitorOnly()
+  }
+
 
   const handleStartRecord = async (isFirst = true) => {
     isFirst &&
@@ -141,14 +325,101 @@ export default function OperationBar(props: OperationBarProps) {
   }
 
   const handlePlayClick = () => {
-    handleStartRecord(true)
+      if (
+        streamConfig.autoRecord ===
+        false
+      ) {
+        void handleMonitorOnly(
+          true
+        )
+
+        return
+      }
+
+      void handleStartRecord(
+        true
+      )
+    }
+
+    const handlePauseClick = async () => {
+      if (timer.current) {
+        clearTimeout(
+          timer.current
+        )
+      }
+
+      liveNotifiedRef.current =
+        false
+
+      if (
+        streamConfig.autoRecord ===
+        false
+      ) {
+        await updateStreamConfig(
+          {
+            ...streamConfig,
+            status:
+              StreamStatus.NOT_STARTED
+          },
+
+          streamConfig.id
+        )
+
+        return
+      }
+
+      await window.api.stopStreamRecord(
+        streamConfig.id
+      )
+    }
+
+
+
+  const openPreviewStream = async (
+    streamUrl: string,
+    type: 'hls' | 'flv'
+  ) => {
+    const proxyResult =
+      await window.api.startStreamPreview({
+        streamUrl,
+
+        roomUrl:
+          streamConfig.roomUrl,
+
+        cookie:
+          streamConfig.cookie,
+
+        proxy:
+          streamConfig.proxy
+      })
+
+    setPreviewType(
+      type
+    )
+
+    setPreviewUrl(
+      proxyResult.url
+    )
+
+    setPreviewOpen(
+      true
+    )
   }
 
-  const handlePauseClick = async () => {
-    await window.api.stopStreamRecord(streamConfig.id)
-    clearTimeout(timer.current)
-  }
+  const handlePreviewOpenChange = (
+    open: boolean
+  ) => {
+    setPreviewOpen(
+      open
+    )
 
+    if (!open) {
+      setPreviewUrl('')
+
+      void window.api
+        .stopStreamPreview()
+    }
+  }
 
   const handlePreviewClick = async () => {
     setIsLoadingPreview(
@@ -220,36 +491,6 @@ export default function OperationBar(props: OperationBarProps) {
         return
       }
 
-      const hlsUrl =
-        liveUrls.find(
-          (url) =>
-            /\.m3u8(?:\?|$)/i.test(
-              url
-            ) ||
-            /pull-hls/i.test(
-              url
-            ) ||
-            /\/hls\//i.test(
-              url
-            )
-        )
-
-      if (hlsUrl) {
-        setPreviewType(
-          'hls'
-        )
-
-        setPreviewUrl(
-          hlsUrl
-        )
-
-        setPreviewOpen(
-          true
-        )
-
-        return
-      }
-
       const flvUrl =
         liveUrls.find(
           (url) =>
@@ -265,47 +506,32 @@ export default function OperationBar(props: OperationBarProps) {
         )
 
       if (flvUrl) {
-        setPreviewType(
+        await openPreviewStream(
+          flvUrl,
           'flv'
-        )
-
-        setPreviewUrl(
-          flvUrl
-        )
-
-        setPreviewOpen(
-          true
         )
 
         return
       }
 
-      const fallback =
+      const hlsUrl =
         liveUrls.find(
           (url) =>
-            /^https?:\/\//i.test(
+            /\.m3u8(?:\?|$)/i.test(
+              url
+            ) ||
+            /pull-hls/i.test(
+              url
+            ) ||
+            /\/hls\//i.test(
               url
             )
         )
 
-      if (fallback) {
-        const looksLikeFlv =
-          /flv/i.test(
-            fallback
-          )
-
-        setPreviewType(
-          looksLikeFlv
-            ? 'flv'
-            : 'hls'
-        )
-
-        setPreviewUrl(
-          fallback
-        )
-
-        setPreviewOpen(
-          true
+      if (hlsUrl) {
+        await openPreviewStream(
+          hlsUrl,
+          'hls'
         )
 
         return
@@ -318,6 +544,19 @@ export default function OperationBar(props: OperationBarProps) {
         description:
           t(
             'stream_config.preview_stream_unavailable'
+          ),
+
+        variant:
+          'destructive'
+      })
+    } catch {
+      toast({
+        title:
+          streamConfig.title,
+
+        description:
+          t(
+            'stream_config.preview_failed'
           ),
 
         variant:
@@ -403,8 +642,8 @@ export default function OperationBar(props: OperationBarProps) {
       <StreamPreviewDialog
       open={previewOpen}
       onOpenChange={
-        setPreviewOpen
-      }
+      handlePreviewOpenChange
+    }
       title={
         streamConfig.title
       }

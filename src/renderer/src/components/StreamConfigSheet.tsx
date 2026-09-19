@@ -34,7 +34,8 @@ const formSchema = z.object({
   proxy: z.string(),
   liveUrls: z.array(z.string()),
   convertToMP4: z.boolean(),
-  detectResolution: z.boolean()
+  detectResolution: z.boolean(),
+    autoRecord: z.boolean()
 })
 
 const defaultStreamConfig: IStreamConfig = {
@@ -51,7 +52,8 @@ const defaultStreamConfig: IStreamConfig = {
   liveUrls: [],
   segmentTime: '',
   convertToMP4: true,
-  detectResolution: false
+  detectResolution: false,
+    autoRecord: true
 }
 
 function validStreamConfigData(
@@ -332,6 +334,37 @@ export default function StreamConfigSheet(props: StreamConfigSheetProps) {
                     </FormItem>
                   )}
                 />
+      <FormField
+        control={form.control}
+        name="autoRecord"
+        render={({ field }) => (
+          <FormItem>
+            <TooltipProvider delayDuration={400}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <FormLabel className="cursor-pointer">
+                    {t('stream_config.auto_record')}
+                  </FormLabel>
+                </TooltipTrigger>
+
+                <TooltipContent>
+                  <p className="max-w-[400px]">
+                    {t('stream_config.auto_record_tooltip')}
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <Switch
+              checked={field.value}
+              onCheckedChange={field.onChange}
+              className="flex"
+            />
+          </FormItem>
+        )}
+      />
+
+
 
                 <FormField
                   control={form.control}

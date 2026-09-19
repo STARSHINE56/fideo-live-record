@@ -288,16 +288,7 @@ export default function StreamPreviewDialog(
 
               lazyLoad:
                 false,
-
-              liveBufferLatencyChasing:
-                true,
-
-              liveBufferLatencyMaxLatency:
-                3,
-
-              liveBufferLatencyMinRemain:
-                0.5
-            }
+}
           )
 
         flvPlayer.attachMediaElement(

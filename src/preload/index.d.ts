@@ -20,6 +20,17 @@ declare global {
         cookie?: string
       }) => Promise<{ code: number; roomInfo: IRoomInfo }>
       navByDefaultBrowser: (url: string) => void
+
+        startStreamPreview: (info: {
+          streamUrl: string
+          roomUrl: string
+          proxy?: string
+          cookie?: string
+        }) => Promise<{
+          url: string
+        }>
+
+        stopStreamPreview: () => Promise<void>
       startStreamRecord: (streamConfig: string) => Promise<{ code: number }>
       stopStreamRecord: (title: string) => Promise<{ code: number }>
       showNotification: (title: string, body: string) => void

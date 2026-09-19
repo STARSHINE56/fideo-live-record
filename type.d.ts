@@ -13,6 +13,7 @@ interface IStreamConfig {
   status: number
   convertToMP4: boolean
   detectResolution: boolean
+  autoRecord: boolean
 }
 type Lang = 'en' | 'cn'
 interface IDefaultDefaultSettingsConfig {

@@ -29,6 +29,15 @@ export const useStreamConfigStore = create<IStreamConfigStore>((set, get) => ({
         shouldUpdate = true
         streamConfig.id = nanoid()
       }
+
+      if (
+        typeof streamConfig.autoRecord !==
+        'boolean'
+      ) {
+        shouldUpdate = true
+        streamConfig.autoRecord = true
+      }
+
       return streamConfig
     })
 

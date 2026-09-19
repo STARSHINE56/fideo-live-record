@@ -110,6 +110,12 @@ export default {
         move_up: 'Move Up',
         move_down: 'Move Down',
         loading: 'Loading...',
+          auto_record: 'Automatically Record When Live',
+          auto_record_tooltip:
+            'When disabled, only monitor and notify when the streamer goes live. FFmpeg recording will not start.',
+          live_detected: 'Streamer is live',
+          live_detected_notify: '{{title}} is now live',
+  
         should_convert_to_mp4: 'Convert to MP4 after recording ends',
         should_detect_resolution: 'Detect resolution',
         should_detect_resolution_tooltip:
@@ -274,6 +280,12 @@ export default {
         move_up: '上移',
         move_down: '下移',
         loading: '加载中...',
+          auto_record: '开播后自动录制',
+          auto_record_tooltip:
+            '关闭后只监控主播是否开播；检测到开播时发送通知，但不会启动 FFmpeg 录制。',
+          live_detected: '检测到主播开播',
+          live_detected_notify: '{{title}} 已经开播',
+  
         should_convert_to_mp4: '录制结束后是否转为MP4',
         should_detect_resolution: '是否检测分辨率',
         should_detect_resolution_tooltip:

@@ -22,6 +22,8 @@ import {
   FORCE_CLOSE_WINDOW,
   GET_LIVE_URLS,
   GET_ROOM_INFO,
+    START_STREAM_PREVIEW,
+    STOP_STREAM_PREVIEW,
   MAXIMIZE_RESTORE_WINDOW,
   MINIMIZE_WINDOW,
   NAV_BY_DEFAULT_BROWSER,
@@ -61,6 +63,10 @@ import {
 
 import { writeLogWrapper } from './log/index'
 import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
+  import {
+    startPreviewProxy,
+    stopPreviewProxy
+  } from './preview-proxy'
 import {
   clearDouyinLogin,
   getDouyinCookie,
@@ -369,6 +375,45 @@ app.whenReady().then(async () => {
     shell.openExternal(url)
   })
 
+    ipcMain.handle(
+      START_STREAM_PREVIEW,
+      async (
+        _,
+        info: {
+          streamUrl: string
+          roomUrl: string
+          proxy?: string
+          cookie?: string
+        }
+      ) => {
+        const effectiveCookie =
+          await getEffectiveCookie(
+            info.roomUrl,
+            info.cookie
+          )
+
+        await stopPreviewProxy()
+
+        return startPreviewProxy({
+          streamUrl:
+            info.streamUrl,
+
+          roomUrl:
+            info.roomUrl,
+
+          cookie:
+            effectiveCookie
+        })
+      }
+    )
+
+    ipcMain.handle(
+      STOP_STREAM_PREVIEW,
+      async () => {
+        await stopPreviewProxy()
+      }
+    )
+
   ipcMain.handle(START_STREAM_RECORD, async (_, streamConfigStr: string) => {
     const streamConfig = JSON.parse(streamConfigStr) as IStreamConfig
     const {
@@ -519,10 +564,10 @@ app.whenReady().then(async () => {
     downloadReq.destroy()
     clearTimerWhenAllFfmpegProcessEnd()
     stopDownloadDepTimerWhenAllDownloadDepEnd()
+      void stopPreviewProxy()
+      stopFrpc()
 
-    stopFrpc()
-
-    win?.destroy()
+      win?.destroy()
   })
 
   ipcMain.handle(START_FRPC_PROCESS, async (_, code: string) => {
