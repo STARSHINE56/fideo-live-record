@@ -44,7 +44,7 @@ jobs:
           npm ci
 
       # ============================================================
-      # 2. 检查正式版本号
+      # 2. 检查版本号
       # ============================================================
 
       - name: Validate version
@@ -54,14 +54,14 @@ jobs:
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           then
             echo "Invalid version: $VERSION"
-            echo "Use format such as 1.1.9"
+            echo "Example: 1.1.9"
             exit 1
           fi
 
           echo "Release version: $VERSION"
 
       # ============================================================
-      # 3. 第三方 MIT 许可证声明
+      # 3. 第三方许可证说明
       # ============================================================
 
       - name: Add third party notices
@@ -116,9 +116,7 @@ jobs:
           const path =
             'src/main/crawler/plugins/douyin-abogus.js'
 
-          if (
-            !fs.existsSync(path)
-          ) {
+          if (!fs.existsSync(path)) {
             throw new Error(
               'douyin-abogus.js not found'
             )
@@ -144,7 +142,7 @@ jobs:
            * Copyright (c) 2025 Hmily
            * Licensed under the MIT License.
            *
-           * See THIRD_PARTY_NOTICES.md for the full license text.
+           * See THIRD_PARTY_NOTICES.md for full license text.
            */
 
           `
@@ -166,7 +164,10 @@ jobs:
           NODE
 
       # ============================================================
-      # 4. 正式版本号
+      # 4. 设置正式版本
+      #
+      # 关键修复：
+      # 测试分支已经是 1.1.9 时也允许继续
       # ============================================================
 
       - name: Set release version
@@ -175,10 +176,24 @@ jobs:
         run: |
           npm version \
             "$VERSION" \
-            --no-git-tag-version
+            --no-git-tag-version \
+            --allow-same-version
+
+          CURRENT_VERSION="$(
+            node -p "require('./package.json').version"
+          )"
+
+          if [ "$CURRENT_VERSION" != "$VERSION" ]
+          then
+            echo "Expected version: $VERSION"
+            echo "Actual version: $CURRENT_VERSION"
+            exit 1
+          fi
+
+          echo "Version confirmed: $CURRENT_VERSION"
 
       # ============================================================
-      # 5. 正式发布前完整检查
+      # 5. 检查 V2.8 功能
       # ============================================================
 
       - name: Verify V2.8 anchor monitoring
@@ -211,8 +226,11 @@ jobs:
             "aweme/v1/web/user/profile/other" \
             src/main/crawler/plugins/douyin.js
 
-          echo \
-            "V2.8 anchor monitoring verified."
+          echo "V2.8 anchor monitoring verified."
+
+      # ============================================================
+      # 6. 检查录制核心
+      # ============================================================
 
       - name: Verify recording core
         run: |
@@ -240,8 +258,11 @@ jobs:
             "audioCodec('copy')" \
             src/main/ffmpeg/record.ts
 
-          echo \
-            "Recording core verified."
+          echo "Recording core verified."
+
+      # ============================================================
+      # 7. 确保预览功能没有回来
+      # ============================================================
 
       - name: Verify preview removed
         run: |
@@ -260,8 +281,11 @@ jobs:
             exit 1
           fi
 
-          echo \
-            "Removed preview feature remains removed."
+          echo "Preview remains removed."
+
+      # ============================================================
+      # 8. 许可证检查
+      # ============================================================
 
       - name: Verify licenses
         run: |
@@ -284,23 +308,26 @@ jobs:
             "Portions adapted from ihmily/streamget" \
             src/main/crawler/plugins/douyin-abogus.js
 
-          echo \
-            "License notices verified."
+          echo "License notices verified."
 
       # ============================================================
-      # 6. TypeScript / Electron 构建
+      # 9. TypeScript
       # ============================================================
 
       - name: TypeScript check
         run: |
           npm run typecheck
 
+      # ============================================================
+      # 10. Electron Build
+      # ============================================================
+
       - name: Build Electron
         run: |
           npm run build
 
       # ============================================================
-      # 7. 构建正式 Windows x64 安装包
+      # 11. Windows x64 正式安装包
       # ============================================================
 
       - name: Build Windows x64 installer
@@ -334,14 +361,13 @@ jobs:
             throw "Installer size is unexpectedly small."
           }
 
-          Write-Host ""
-          Write-Host "Release installer verified:"
+          Write-Host "Release installer verified."
           Write-Host "Name: $($file.Name)"
           Write-Host "Size: $($file.Length)"
           Write-Host "Path: $($file.FullName)"
 
       # ============================================================
-      # 8. 创建正式发布分支和 Tag
+      # 12. 检查 Tag 是否已存在
       # ============================================================
 
       - name: Check release tag
@@ -353,14 +379,18 @@ jobs:
             --tags
 
           if git rev-parse \
-            "v$VERSION" \
+            "refs/tags/v$VERSION" \
             >/dev/null 2>&1
           then
-            echo \
-              "Tag v$VERSION already exists."
-
+            echo "Tag v$VERSION already exists."
             exit 1
           fi
+
+          echo "Tag v$VERSION is available."
+
+      # ============================================================
+      # 13. 保存正式源码
+      # ============================================================
 
       - name: Commit official release source
         env:
@@ -386,8 +416,13 @@ jobs:
             THIRD_PARTY_NOTICES.md \
             src/main/crawler/plugins/douyin-abogus.js
 
-          git commit \
-            -m "Release v$VERSION"
+          if git diff --cached --quiet
+          then
+            echo "No additional release-source changes."
+          else
+            git commit \
+              -m "Release v$VERSION"
+          fi
 
           git tag \
             -a \
@@ -404,10 +439,10 @@ jobs:
             "v$VERSION"
 
       # ============================================================
-      # 9. Artifact 备份
+      # 14. Artifact 备份
       # ============================================================
 
-      - name: Upload build artifact
+      - name: Upload official installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: fideo-${{ inputs.version }}-official-windows-x64
@@ -416,7 +451,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 10. GitHub 正式 Release
+      # 15. GitHub 正式 Release
       # ============================================================
 
       - name: Publish GitHub Release
@@ -427,10 +462,12 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: false
+          files: |
+            dist/fideo-${{ inputs.version }}-x64.exe
           body: |
             ## Fideo v${{ inputs.version }}
 
-            本版本基于已经完成实际测试的 Douyin V2.8。
+            本版本基于已完成实际测试的 Douyin V2.8。
 
             ### 主要更新
 
@@ -446,38 +483,35 @@ jobs:
             - 移除不稳定的直播预览功能
             - 保留 FFmpeg 音视频原流复制录制
 
-            ### 使用主播主页监控
+            ### 主播主页监控
 
-            可以添加类似：
+            可以添加：
 
             `https://www.douyin.com/user/...`
 
-            的主播主页地址。
-
             即使主播当前没有开播，也可以提前加入监控列表。
+
             检测到主播开播后，程序会自动解析直播间并继续执行提醒或录制。
 
             ### 开源许可
 
             Fideo 按 AGPL-3.0 发布。
 
-            部分抖音请求签名实现参考/改编自开源项目 streamget，
-            相关 MIT 许可证和版权声明见源码中的 THIRD_PARTY_NOTICES.md。
+            部分抖音请求签名实现参考/改编自 streamget。
+            对应 MIT 版权及许可声明见源码中的 THIRD_PARTY_NOTICES.md。
 
             ### 注意
 
-            本软件仅应用于管理和录制您有权访问、保存的直播内容。
+            本软件仅用于管理和录制您有权访问、保存的直播内容。
             请遵守相关平台规则、当地法律以及内容版权要求。
 
             Windows 安装包当前未使用商业代码签名证书，
             Windows SmartScreen 可能显示未知发布者提示。
-          files: |
-            dist/fideo-${{ inputs.version }}-x64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ============================================================
-      # 11. 发布摘要
+      # 16. 发布摘要
       # ============================================================
 
       - name: Release summary
