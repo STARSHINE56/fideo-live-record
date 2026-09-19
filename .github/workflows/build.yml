@@ -1,10 +1,7 @@
 name: Build and Release fideo
 
 on:
-  push:
-    branches:
-      - beta
-      - main
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
