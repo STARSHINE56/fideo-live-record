@@ -64,9 +64,9 @@ import {
 import { writeLogWrapper } from './log/index'
 import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
   import {
-    startPreviewProxy,
-    stopPreviewProxy
-  } from './preview-proxy'
+      startPreviewTranscoder,
+      stopPreviewTranscoder
+    } from './preview-transcoder'
 import {
   clearDouyinLogin,
   getDouyinCookie,
@@ -376,43 +376,44 @@ app.whenReady().then(async () => {
   })
 
     ipcMain.handle(
-      START_STREAM_PREVIEW,
-      async (
-        _,
-        info: {
-          streamUrl: string
-          roomUrl: string
-          proxy?: string
-          cookie?: string
-        }
-      ) => {
-        const effectiveCookie =
-          await getEffectiveCookie(
-            info.roomUrl,
-            info.cookie
-          )
-
-        await stopPreviewProxy()
-
-        return startPreviewProxy({
-          streamUrl:
-            info.streamUrl,
-
-          roomUrl:
-            info.roomUrl,
-
-          cookie:
-            effectiveCookie
-        })
+    START_STREAM_PREVIEW,
+    async (
+      _,
+      info: {
+        streamUrl: string
+        roomUrl: string
+        proxy?: string
+        cookie?: string
       }
-    )
+    ) => {
+      const effectiveCookie =
+        await getEffectiveCookie(
+          info.roomUrl,
+          info.cookie
+        )
 
-    ipcMain.handle(
-      STOP_STREAM_PREVIEW,
-      async () => {
-        await stopPreviewProxy()
-      }
-    )
+      return startPreviewTranscoder({
+        streamUrl:
+          info.streamUrl,
+
+        roomUrl:
+          info.roomUrl,
+
+        proxy:
+          info.proxy,
+
+        cookie:
+          effectiveCookie
+      })
+    }
+  )
+
+  ipcMain.handle(
+    STOP_STREAM_PREVIEW,
+    async () => {
+      await stopPreviewTranscoder()
+    }
+  )
 
   ipcMain.handle(START_STREAM_RECORD, async (_, streamConfigStr: string) => {
     const streamConfig = JSON.parse(streamConfigStr) as IStreamConfig
@@ -564,7 +565,7 @@ app.whenReady().then(async () => {
     downloadReq.destroy()
     clearTimerWhenAllFfmpegProcessEnd()
     stopDownloadDepTimerWhenAllDownloadDepEnd()
-      void stopPreviewProxy()
+      void stopPreviewTranscoder()
       stopFrpc()
 
       win?.destroy()

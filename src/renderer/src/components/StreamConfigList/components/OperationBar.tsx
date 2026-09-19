@@ -375,37 +375,6 @@ export default function OperationBar(props: OperationBarProps) {
 
 
 
-  const openPreviewStream = async (
-    streamUrl: string,
-    type: 'hls' | 'flv'
-  ) => {
-    const proxyResult =
-      await window.api.startStreamPreview({
-        streamUrl,
-
-        roomUrl:
-          streamConfig.roomUrl,
-
-        cookie:
-          streamConfig.cookie,
-
-        proxy:
-          streamConfig.proxy
-      })
-
-    setPreviewType(
-      type
-    )
-
-    setPreviewUrl(
-      proxyResult.url
-    )
-
-    setPreviewOpen(
-      true
-    )
-  }
-
   const handlePreviewOpenChange = (
     open: boolean
   ) => {
@@ -491,64 +460,35 @@ export default function OperationBar(props: OperationBarProps) {
         return
       }
 
-      const flvUrl =
-        liveUrls.find(
-          (url) =>
-            /\.flv(?:\?|$)/i.test(
-              url
-            ) ||
-            /pull-flv/i.test(
-              url
-            ) ||
-            /\/flv\//i.test(
-              url
-            )
-        )
+      const selectedUrl =
+        liveUrls[0]
 
-      if (flvUrl) {
-        await openPreviewStream(
-          flvUrl,
-          'flv'
-        )
+      const proxyResult =
+        await window.api.startStreamPreview({
+          streamUrl:
+            selectedUrl,
 
-        return
-      }
+          roomUrl:
+            streamConfig.roomUrl,
 
-      const hlsUrl =
-        liveUrls.find(
-          (url) =>
-            /\.m3u8(?:\?|$)/i.test(
-              url
-            ) ||
-            /pull-hls/i.test(
-              url
-            ) ||
-            /\/hls\//i.test(
-              url
-            )
-        )
+          cookie:
+            streamConfig.cookie,
 
-      if (hlsUrl) {
-        await openPreviewStream(
-          hlsUrl,
-          'hls'
-        )
+          proxy:
+            streamConfig.proxy
+        })
 
-        return
-      }
+      setPreviewType(
+        'hls'
+      )
 
-      toast({
-        title:
-          streamConfig.title,
+      setPreviewUrl(
+        proxyResult.url
+      )
 
-        description:
-          t(
-            'stream_config.preview_stream_unavailable'
-          ),
-
-        variant:
-          'destructive'
-      })
+      setPreviewOpen(
+        true
+      )
     } catch {
       toast({
         title:
