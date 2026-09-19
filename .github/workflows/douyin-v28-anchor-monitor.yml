@@ -1,0 +1,1533 @@
+name: Douyin V2.8 Anchor Monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "测试版本号，例如 1.1.9"
+        required: true
+        default: "1.1.9"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Douyin Anchor Monitor
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # ============================================================
+      # 基于已经成功的 V2.7
+      # ============================================================
+
+      - name: Checkout V2.7
+        uses: actions/checkout@v4
+        with:
+          ref: douyin-v2.7-ui-test
+          fetch-depth: 0
+
+      - name: Create V2.8 test branch
+        run: |
+          git switch -C douyin-v2.8-anchor-monitor-test
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      # ============================================================
+      # 1. 允许 crawler 接受抖音主播主页
+      # ============================================================
+
+      - name: Add Douyin profile hosts
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/main/crawler/index.js'
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          if (
+            !text.includes(
+              "'www.douyin.com':"
+            )
+          ) {
+            const marker =
+          `  'v.douyin.com': {
+            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
+            getRoomInfoFn: getDouYinRoomInfoPlugin
+          },`
+
+            const replacement =
+          `  'v.douyin.com': {
+            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
+            getRoomInfoFn: getDouYinRoomInfoPlugin
+          },
+
+          'www.douyin.com': {
+            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
+            getRoomInfoFn: getDouYinRoomInfoPlugin
+          },
+
+          'douyin.com': {
+            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
+            getRoomInfoFn: getDouYinRoomInfoPlugin
+          },`
+
+            if (
+              !text.includes(marker)
+            ) {
+              throw new Error(
+                'Douyin crawler host insertion point not found'
+              )
+            }
+
+            text =
+              text.replace(
+                marker,
+                replacement
+              )
+          }
+
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
+          )
+
+          console.log(
+            'Douyin profile hosts enabled.'
+          )
+          NODE
+
+      # ============================================================
+      # 2. 给 douyin.js 增加主播主页解析 / 离线查询
+      # ============================================================
+
+      - name: Add Douyin anchor profile resolver
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/main/crawler/plugins/douyin.js'
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          const helperMarker =
+            'async function getDesktopRoomWithFallback('
+
+          if (
+            !text.includes(
+              helperMarker
+            )
+          ) {
+            throw new Error(
+              'getDesktopRoomWithFallback marker not found'
+            )
+          }
+
+          if (
+            !text.includes(
+              'async function getDouyinAnchorProfile('
+            )
+          ) {
+            const helpers = `
+          function getDouyinProfileSecUid(
+            inputUrl
+          ) {
+            try {
+              const url =
+                new URL(
+                  inputUrl
+                )
+
+              const host =
+                url.hostname
+                  .toLowerCase()
+
+              if (
+                host !==
+                  'www.douyin.com' &&
+                host !==
+                  'douyin.com'
+              ) {
+                return ''
+              }
+
+              const parts =
+                url.pathname
+                  .split('/')
+                  .filter(Boolean)
+
+              if (
+                parts[0] !==
+                  'user' ||
+                !parts[1]
+              ) {
+                return ''
+              }
+
+              return decodeURIComponent(
+                parts[1]
+              )
+            } catch {
+              return ''
+            }
+          }
+
+
+          function parseDouyinJson(
+            value
+          ) {
+            if (!value) {
+              return null
+            }
+
+            if (
+              typeof value ===
+              'object'
+            ) {
+              return value
+            }
+
+            if (
+              typeof value !==
+              'string'
+            ) {
+              return null
+            }
+
+            try {
+              return JSON.parse(
+                value
+              )
+            } catch {
+              return null
+            }
+          }
+
+
+          function findDouyinValue(
+            value,
+            names,
+            depth = 0
+          ) {
+            if (
+              !value ||
+              typeof value !==
+                'object' ||
+              depth > 7
+            ) {
+              return undefined
+            }
+
+            for (
+              const name of names
+            ) {
+              const result =
+                value[name]
+
+              if (
+                result !==
+                  undefined &&
+                result !==
+                  null &&
+                result !==
+                  ''
+              ) {
+                return result
+              }
+            }
+
+            for (
+              const child of
+              Object.values(value)
+            ) {
+              if (
+                !child ||
+                typeof child !==
+                  'object'
+              ) {
+                continue
+              }
+
+              const found =
+                findDouyinValue(
+                  child,
+                  names,
+                  depth + 1
+                )
+
+              if (
+                found !==
+                undefined
+              ) {
+                return found
+              }
+            }
+
+            return undefined
+          }
+
+
+          function buildDouyinProfileParams(
+            secUid
+          ) {
+            return new URLSearchParams({
+              device_platform:
+                'webapp',
+
+              aid:
+                '6383',
+
+              channel:
+                'channel_pc_web',
+
+              pc_client_type:
+                '1',
+
+              version_code:
+                '190500',
+
+              version_name:
+                '19.5.0',
+
+              cookie_enabled:
+                'true',
+
+              screen_width:
+                '1920',
+
+              screen_height:
+                '1080',
+
+              browser_language:
+                'zh-CN',
+
+              browser_platform:
+                'Win32',
+
+              browser_name:
+                'Chrome',
+
+              browser_version:
+                '123.0.0.0',
+
+              browser_online:
+                'true',
+
+              engine_name:
+                'Blink',
+
+              engine_version:
+                '123.0.0.0',
+
+              os_name:
+                'Windows',
+
+              os_version:
+                '10',
+
+              cpu_core_num:
+                '8',
+
+              device_memory:
+                '8',
+
+              platform:
+                'PC',
+
+              downlink:
+                '10',
+
+              effective_type:
+                '4g',
+
+              round_trip_time:
+                '50',
+
+              publish_video_strategy_type:
+                '2',
+
+              personal_center_strategy:
+                '1',
+
+              sec_user_id:
+                secUid,
+
+              msToken:
+                ''
+            })
+          }
+
+
+          async function getDouyinAnchorProfile(
+            secUid,
+            others = {}
+          ) {
+            const {
+              proxy,
+              cookie
+            } =
+              others
+
+            if (!secUid) {
+              throw new Error(
+                'DOUYIN_SEC_UID_EMPTY'
+              )
+            }
+
+            const profileUrl =
+              'https://www.douyin.com/user/' +
+              encodeURIComponent(
+                secUid
+              )
+
+            const headers = {
+              Referer:
+                profileUrl,
+
+              'User-Agent':
+                PC_USER_AGENT
+            }
+
+            let generatedCookie =
+              ''
+
+            try {
+              const bootstrap =
+                await request(
+                  'https://www.douyin.com/',
+                  {
+                    headers,
+                    proxy
+                  }
+                )
+
+              generatedCookie =
+                joinSetCookies(
+                  bootstrap
+                )
+            } catch {
+              // Existing login cookie may
+              // still be sufficient.
+            }
+
+            const finalCookie = [
+              generatedCookie,
+              cookie
+            ]
+              .filter(Boolean)
+              .join('; ')
+
+            const params =
+              buildDouyinProfileParams(
+                secUid
+              )
+
+            const query =
+              params.toString()
+
+            const aBogus =
+              generateABogus(
+                query,
+                PC_USER_AGENT
+              )
+
+            params.set(
+              'a_bogus',
+              aBogus
+            )
+
+            const apiUrl =
+              'https://www.douyin.com' +
+              '/aweme/v1/web/user/profile/other/?' +
+              params.toString()
+
+            const response =
+              await request(
+                apiUrl,
+                {
+                  headers: {
+                    ...headers,
+
+                    ...(finalCookie
+                      ? {
+                          cookie:
+                            finalCookie
+                        }
+                      : {})
+                  },
+
+                  proxy
+                }
+              )
+
+            const body =
+              response?.data
+
+            if (!body) {
+              throw new Error(
+                'DOUYIN_PROFILE_EMPTY'
+              )
+            }
+
+            const user =
+              body?.user ||
+              body?.data?.user ||
+              body?.user_info ||
+              body?.data ||
+              {}
+
+            const roomData =
+              parseDouyinJson(
+                user?.room_data
+              ) ||
+              parseDouyinJson(
+                body?.room_data
+              ) ||
+              parseDouyinJson(
+                body?.data?.room_data
+              ) ||
+              {}
+
+            const nickname =
+              user?.nickname ||
+              findDouyinValue(
+                user,
+                [
+                  'nickname',
+                  'nick_name'
+                ]
+              ) ||
+              ''
+
+            const userLiveStatus =
+              Number(
+                user?.live_status ??
+                user?.liveStatus ??
+                0
+              )
+
+            const roomStatus =
+              Number(
+                roomData?.status ??
+                roomData?.room?.status ??
+                findDouyinValue(
+                  roomData,
+                  [
+                    'status'
+                  ]
+                ) ??
+                0
+              )
+
+            const rawWebRid =
+              findDouyinValue(
+                roomData,
+                [
+                  'web_rid',
+                  'webRid'
+                ]
+              ) ??
+              findDouyinValue(
+                user,
+                [
+                  'web_rid',
+                  'webRid'
+                ]
+              )
+
+            const webRid =
+              rawWebRid
+                ? String(
+                    rawWebRid
+                  )
+                : ''
+
+            const live =
+              userLiveStatus === 1 ||
+              userLiveStatus === 2 ||
+              roomStatus === 2
+
+            log(
+              'Douyin anchor profile:',
+              {
+                nickname,
+                live,
+                hasWebRid:
+                  Boolean(
+                    webRid
+                  )
+              }
+            )
+
+            return {
+              nickname,
+              live,
+              webRid,
+              secUid
+            }
+          }
+
+
+          async function resolveDouyinTarget(
+            inputUrl,
+            others = {}
+          ) {
+            let currentUrl =
+              inputUrl
+
+            let parsed
+
+            try {
+              parsed =
+                new URL(
+                  currentUrl
+                )
+            } catch {
+              throw new Error(
+                'DOUYIN_INVALID_URL'
+              )
+            }
+
+            if (
+              parsed.hostname ===
+              'v.douyin.com'
+            ) {
+              const response =
+                await request(
+                  currentUrl,
+                  {
+                    headers: {
+                      'User-Agent':
+                        PC_USER_AGENT
+                    },
+
+                    proxy:
+                      others.proxy
+                  }
+                )
+
+              currentUrl =
+                response
+                  ?.request
+                  ?.res
+                  ?.responseUrl ||
+                currentUrl
+
+              try {
+                parsed =
+                  new URL(
+                    currentUrl
+                  )
+              } catch {
+                throw new Error(
+                  'DOUYIN_INVALID_REDIRECT_URL'
+                )
+              }
+            }
+
+            const secUid =
+              getDouyinProfileSecUid(
+                currentUrl
+              )
+
+            if (secUid) {
+              return {
+                type:
+                  'anchor',
+
+                secUid,
+
+                sourceUrl:
+                  currentUrl
+              }
+            }
+
+            const liveRoomUrl =
+              await resolveDouyinLiveUrl(
+                currentUrl,
+                others
+              )
+
+            return {
+              type:
+                'room',
+
+              roomUrl:
+                liveRoomUrl,
+
+              sourceUrl:
+                currentUrl
+            }
+          }
+
+
+          async function resolveAnchorLiveRoom(
+            secUid,
+            others = {}
+          ) {
+            const profile =
+              await getDouyinAnchorProfile(
+                secUid,
+                others
+              )
+
+            if (
+              !profile.live
+            ) {
+              return {
+                code:
+                  CRAWLER_ERROR_CODE.NOT_URLS,
+
+                profile
+              }
+            }
+
+            if (
+              !profile.webRid
+            ) {
+              return {
+                code:
+                  CRAWLER_ERROR_CODE.NOT_URLS,
+
+                profile
+              }
+            }
+
+            return {
+              code:
+                SUCCESS_CODE,
+
+              profile,
+
+              roomUrl:
+                'https://live.douyin.com/' +
+                profile.webRid
+            }
+          }
+
+
+          `
+
+            text =
+              text.replace(
+                helperMarker,
+                helpers +
+                helperMarker
+              )
+          }
+
+          // ==================================================
+          // 替换 getLiveUrls 入口
+          // ==================================================
+
+          const liveStart =
+            text.indexOf(
+              'async function baseGetDouYinLiveUrlsPlugin('
+            )
+
+          const mobileStart =
+            text.indexOf(
+              'async function baseGetMobileDouYinLiveUrlsPlugin(',
+              liveStart
+            )
+
+          if (
+            liveStart < 0 ||
+            mobileStart <= liveStart
+          ) {
+            throw new Error(
+              'baseGetDouYinLiveUrlsPlugin boundaries not found'
+            )
+          }
+
+          const newLiveFunction = `
+          async function baseGetDouYinLiveUrlsPlugin(
+            roomUrl,
+            others = {}
+          ) {
+            const target =
+              await resolveDouyinTarget(
+                roomUrl,
+                others
+              )
+
+            if (
+              target.type ===
+              'anchor'
+            ) {
+              const result =
+                await resolveAnchorLiveRoom(
+                  target.secUid,
+                  others
+                )
+
+              if (
+                result.code !==
+                SUCCESS_CODE
+              ) {
+                return {
+                  code:
+                    CRAWLER_ERROR_CODE.NOT_URLS
+                }
+              }
+
+              return await baseGetDesktopDouYinLiveUrlsPlugin(
+                result.roomUrl,
+                others
+              )
+            }
+
+            return await baseGetDesktopDouYinLiveUrlsPlugin(
+              target.roomUrl,
+              others
+            )
+          }
+
+
+          `
+
+          text =
+            text.slice(
+              0,
+              liveStart
+            ) +
+            newLiveFunction +
+            text.slice(
+              mobileStart
+            )
+
+          // ==================================================
+          // 替换房间信息入口
+          // 离线主播主页也能获取昵称
+          // ==================================================
+
+          const infoStart =
+            text.indexOf(
+              'async function baseGetDouYinRoomInfoPlugin('
+            )
+
+          const exportStart =
+            text.indexOf(
+              'export const getDouYinLiveUrlsPlugin',
+              infoStart
+            )
+
+          if (
+            infoStart < 0 ||
+            exportStart <= infoStart
+          ) {
+            throw new Error(
+              'RoomInfo function boundaries not found'
+            )
+          }
+
+          const newInfoFunction = `
+          async function baseGetDouYinRoomInfoPlugin(
+            roomUrl,
+            others = {}
+          ) {
+            const target =
+              await resolveDouyinTarget(
+                roomUrl,
+                others
+              )
+
+            if (
+              target.type ===
+              'anchor'
+            ) {
+              const profile =
+                await getDouyinAnchorProfile(
+                  target.secUid,
+                  others
+                )
+
+              return {
+                code:
+                  SUCCESS_CODE,
+
+                roomInfo: {
+                  name:
+                    profile.nickname ||
+                    ''
+                }
+              }
+            }
+
+            const room =
+              await getDesktopRoomWithFallback(
+                target.roomUrl,
+                others
+              )
+
+            return {
+              code:
+                SUCCESS_CODE,
+
+              roomInfo: {
+                name:
+                  room
+                    ?.owner
+                    ?.nickname ||
+                  ''
+              }
+            }
+          }
+
+
+          `
+
+          text =
+            text.slice(
+              0,
+              infoStart
+            ) +
+            newInfoFunction +
+            text.slice(
+              exportStart
+            )
+
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
+          )
+
+          console.log(
+            'Douyin anchor monitor parser installed.'
+          )
+          NODE
+
+      # ============================================================
+      # 3. 创建页支持主播主页离线添加
+      # ============================================================
+
+      - name: Update stream config UI
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/renderer/src/components/StreamConfigSheet.tsx'
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          // ==================================================
+          // import CRAWLER_ERROR_CODE
+          // ==================================================
+
+          text =
+            text.replace(
+              "import { errorCodeToI18nMessage, SUCCESS_CODE } from '../../../code'",
+
+              "import { CRAWLER_ERROR_CODE, errorCodeToI18nMessage, SUCCESS_CODE } from '../../../code'"
+            )
+
+          // ==================================================
+          // 添加主播主页判断函数
+          // ==================================================
+
+          if (
+            !text.includes(
+              'function isDouyinAnchorUrl('
+            )
+          ) {
+            const marker =
+              'const defaultStreamConfig: IStreamConfig = {'
+
+            const helper =
+          `function isDouyinAnchorUrl(
+            value: string
+          ) {
+            try {
+              const url =
+                new URL(
+                  value
+                )
+
+              const host =
+                url.hostname
+                  .toLowerCase()
+
+              return (
+                (
+                  host ===
+                    'www.douyin.com' ||
+                  host ===
+                    'douyin.com'
+                ) &&
+                url.pathname.startsWith(
+                  '/user/'
+                )
+              )
+            } catch {
+              return false
+            }
+          }
+
+
+          `
+
+            if (
+              !text.includes(marker)
+            ) {
+              throw new Error(
+                'defaultStreamConfig marker not found'
+              )
+            }
+
+            text =
+              text.replace(
+                marker,
+                helper +
+                marker
+              )
+          }
+
+          // ==================================================
+          // 当前地址监听
+          // ==================================================
+
+          const stateMarker =
+            "  const [liveUrls, setLiveUrls] = useState(form.getValues('liveUrls'))"
+
+          if (
+            text.includes(
+              stateMarker
+            ) &&
+            !text.includes(
+              "const currentRoomUrl = form.watch('roomUrl')"
+            )
+          ) {
+            text =
+              text.replace(
+                stateMarker,
+
+          `${stateMarker}
+
+            const currentRoomUrl =
+              form.watch(
+                'roomUrl'
+              )`
+              )
+          }
+
+          // ==================================================
+          // 离线主播主页不再弹红色错误
+          // ==================================================
+
+          const oldErrorBlock =
+          `    if (code !== SUCCESS_CODE) {
+                toast({
+                  title: form.getValues('title'),
+                  description: t(errorCodeToI18nMessage(code, 'error.get_line.')),
+                  variant: 'destructive'
+                })
+                return
+              }
+              setLiveUrls(liveUrls)`
+
+          const newErrorBlock =
+          `    if (code !== SUCCESS_CODE) {
+                const roomUrl =
+                  form.getValues(
+                    'roomUrl'
+                  )
+
+                if (
+                  code ===
+                    CRAWLER_ERROR_CODE.NOT_URLS &&
+                  isDouyinAnchorUrl(
+                    roomUrl
+                  )
+                ) {
+                  form.setValue(
+                    'line',
+                    '0'
+                  )
+
+                  setLiveUrls([])
+
+                  return
+                }
+
+                toast({
+                  title:
+                    form.getValues(
+                      'title'
+                    ),
+
+                  description:
+                    t(
+                      errorCodeToI18nMessage(
+                        code,
+                        'error.get_line.'
+                      )
+                    ),
+
+                  variant:
+                    'destructive'
+                })
+
+                return
+              }
+
+              setLiveUrls(
+                liveUrls
+              )`
+
+          if (
+            !text.includes(
+              oldErrorBlock
+            )
+          ) {
+            throw new Error(
+              'handleGetLiveUrls error block not found'
+            )
+          }
+
+          text =
+            text.replace(
+              oldErrorBlock,
+              newErrorBlock
+            )
+
+          // ==================================================
+          // 没开播时线路显示“自动获取”
+          // ==================================================
+
+          const oldSelect =
+          `                          {liveUrls.length > 0 ? (
+                            liveUrls.map((_, index) => (
+                              <SelectItem key={index} value={String(index)}>
+                                {t('stream_config.line')} {index + 1}
+                              </SelectItem>
+                            ))
+                          ) : (
+                            <SelectItem disabled value="loading">
+                              {t('stream_config.loading')}
+                            </SelectItem>
+                          )}`
+
+          const newSelect =
+          `                          {liveUrls.length > 0 ? (
+                            liveUrls.map((_, index) => (
+                              <SelectItem key={index} value={String(index)}>
+                                {t('stream_config.line')} {index + 1}
+                              </SelectItem>
+                            ))
+                          ) : isDouyinAnchorUrl(currentRoomUrl) ? (
+                            <SelectItem value="0">
+                              {t('stream_config.auto_line_when_live')}
+                            </SelectItem>
+                          ) : (
+                            <SelectItem disabled value="loading">
+                              {t('stream_config.loading')}
+                            </SelectItem>
+                          )}`
+
+          if (
+            !text.includes(
+              oldSelect
+            )
+          ) {
+            throw new Error(
+              'Line select block not found'
+            )
+          }
+
+          text =
+            text.replace(
+              oldSelect,
+              newSelect
+            )
+
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
+          )
+
+          console.log(
+            'Offline anchor UI enabled.'
+          )
+          NODE
+
+      # ============================================================
+      # 4. 中文 / 英文文案
+      # ============================================================
+
+      - name: Update locale text
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/renderer/src/locales/locales.js'
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          text =
+            text.replace(
+              "room_url: 'Stream URL',",
+              "room_url: 'Live Room / Streamer Profile URL',"
+            )
+
+          text =
+            text.replace(
+              "room_url_placeholder: 'Please enter the stream URL',",
+
+              "room_url_placeholder: 'Enter a live-room URL or Douyin streamer profile URL',"
+            )
+
+          text =
+            text.replace(
+              "room_url_can_not_be_empty: 'Stream URL cannot be empty',",
+
+              "room_url_can_not_be_empty: 'Live room / streamer profile URL cannot be empty',"
+            )
+
+          text =
+            text.replace(
+              "room_url_invalid: 'Stream URL is invalid',",
+
+              "room_url_invalid: 'Live room / streamer profile URL is invalid',"
+            )
+
+          text =
+            text.replace(
+              "room_url: '直播间地址',",
+              "room_url: '直播间 / 主播主页地址',"
+            )
+
+          text =
+            text.replace(
+              "room_url_placeholder: '请输入直播间地址',",
+
+              "room_url_placeholder: '请输入直播间地址或抖音主播主页地址',"
+            )
+
+          text =
+            text.replace(
+              "room_url_can_not_be_empty: '直播间地址不能为空',",
+
+              "room_url_can_not_be_empty: '直播间或主播主页地址不能为空',"
+            )
+
+          text =
+            text.replace(
+              "room_url_invalid: '直播间地址不合法',",
+
+              "room_url_invalid: '直播间或主播主页地址不合法',"
+            )
+
+          if (
+            !text.includes(
+              "auto_line_when_live: 'Automatically fetch when live'"
+            )
+          ) {
+            text =
+              text.replace(
+                "line_placeholder: 'Please select a line',",
+
+          `line_placeholder: 'Please select a line',
+                auto_line_when_live: 'Automatically fetch when live',`
+              )
+          }
+
+          if (
+            !text.includes(
+              "auto_line_when_live: '开播后自动获取'"
+            )
+          ) {
+            text =
+              text.replace(
+                "line_placeholder: '请选择线路',",
+
+          `line_placeholder: '请选择线路',
+                auto_line_when_live: '开播后自动获取',`
+              )
+          }
+
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
+          )
+
+          console.log(
+            'Locales updated.'
+          )
+          NODE
+
+      # ============================================================
+      # 5. 版本号
+      # ============================================================
+
+      - name: Update version
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          npm version \
+            "$APP_VERSION" \
+            --no-git-tag-version
+
+      # ============================================================
+      # 6. 静态检查
+      # ============================================================
+
+      - name: Verify V2.8 source changes
+        run: |
+          grep -q \
+            "'www.douyin.com':" \
+            src/main/crawler/index.js
+
+          grep -q \
+            "'douyin.com':" \
+            src/main/crawler/index.js
+
+          grep -q \
+            "getDouyinProfileSecUid" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "getDouyinAnchorProfile" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "resolveDouyinTarget" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "resolveAnchorLiveRoom" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "aweme/v1/web/user/profile/other" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "sec_user_id" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "auto_line_when_live" \
+            src/renderer/src/components/StreamConfigSheet.tsx
+
+          grep -q \
+            "主播主页地址" \
+            src/renderer/src/locales/locales.js
+
+          grep -q \
+            "handleMonitorOnly" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "getQualityRank" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "videoCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "audioCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          echo \
+            "V2.8 source verification passed."
+
+      # ============================================================
+      # 7. 确保 V2.7 的预览功能没有回来
+      # ============================================================
+
+      - name: Verify preview still removed
+        run: |
+          LEFTOVERS="$(
+            grep -R \
+              -n \
+              -E \
+              'START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|StreamPreviewDialog|startStreamPreview|preview-transcoder|preview-proxy' \
+              src \
+              || true
+          )"
+
+          if [ -n "$LEFTOVERS" ]
+          then
+            echo "$LEFTOVERS"
+
+            echo \
+              "Preview feature unexpectedly returned."
+
+            exit 1
+          fi
+
+          echo \
+            "Preview remains removed."
+
+      # ============================================================
+      # 8. TypeScript
+      # ============================================================
+
+      - name: TypeScript check
+        run: |
+          npm run typecheck
+
+      # ============================================================
+      # 9. Build
+      # ============================================================
+
+      - name: Build Electron
+        run: |
+          npm run build
+
+      # ============================================================
+      # 10. Windows x64
+      # ============================================================
+
+      - name: Package Windows x64
+        run: |
+          npx electron-builder \
+            --win \
+            nsis \
+            --x64 \
+            --publish never
+
+      - name: Verify installer
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $package =
+            Get-Content package.json |
+            ConvertFrom-Json
+
+          if (
+            $package.version -ne
+            $env:EXPECTED_VERSION
+          ) {
+            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+          }
+
+          $installers =
+            Get-ChildItem \
+              -Path dist \
+              -Filter "*-x64.exe"
+
+          if (
+            -not $installers -or
+            $installers.Count -eq 0
+          ) {
+            throw \
+              "Windows installer not generated."
+          }
+
+          Write-Host \
+            "Generated installer:"
+
+          $installers |
+            Select-Object \
+              Name,
+              Length,
+              FullName |
+            Format-Table \
+              -AutoSize
+
+      # ============================================================
+      # 11. 成功以后才保存测试分支
+      # ============================================================
+
+      - name: Commit V2.8 source
+        run: |
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet
+          then
+            echo \
+              "No source changes."
+          else
+            git commit \
+              -m "Add Douyin offline streamer profile monitoring"
+          fi
+
+          git push \
+            --force \
+            origin \
+            douyin-v2.8-anchor-monitor-test
+
+      # ============================================================
+      # 12. 上传安装包
+      # ============================================================
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-${{ inputs.version }}-douyin-v2.8-anchor-monitor-windows-x64
+          path: dist/*-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        if: always()
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "# Fideo Douyin V2.8 Anchor Monitor"
+            echo
+            echo "Version: \`$APP_VERSION\`"
+            echo
+            echo "Branch: \`douyin-v2.8-anchor-monitor-test\`"
+            echo
+            echo "- Supports Douyin live-room URLs"
+            echo "- Supports Douyin streamer profile URLs"
+            echo "- Streamer can be added while offline"
+            echo "- Uses sec_user_id for profile monitoring"
+            echo "- Resolves web_rid automatically after streamer goes live"
+            echo "- Reuses existing highest-quality stream selection"
+            echo "- Reuses existing automatic recording"
+            echo "- Reuses notify-only monitoring"
+            echo "- V2.7 preview remains removed"
+          } >> "$GITHUB_STEP_SUMMARY"
