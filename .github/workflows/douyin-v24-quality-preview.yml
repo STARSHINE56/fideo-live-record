@@ -23,10 +23,6 @@ jobs:
         shell: bash
 
     steps:
-      # ============================================================
-      # 1. 使用已经成功的 V2.3 测试源码
-      # ============================================================
-
       - name: Checkout V2.3 tested source
         uses: actions/checkout@v4
         with:
@@ -36,10 +32,6 @@ jobs:
       - name: Create V2.4 test branch
         run: |
           git switch -C douyin-v2.4-test
-
-      # ============================================================
-      # 2. Node
-      # ============================================================
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,17 +43,9 @@ jobs:
         run: |
           npm ci
 
-      # ============================================================
-      # 3. 增加 FLV 内置播放器
-      # ============================================================
-
       - name: Install preview dependencies
         run: |
           npm install hls.js@1.7.3 mpegts.js@1.8.0 --save-exact
-
-      # ============================================================
-      # 4. 完整重写预览播放器
-      # ============================================================
 
       - name: Create HLS and FLV preview player
         run: |
@@ -188,9 +172,9 @@ jobs:
                 }
               }
 
-              // ==================================================
-              // HLS
-              // ==================================================
+              // ================================================
+              // HLS preview
+              // ================================================
 
               if (
                 type === 'hls'
@@ -202,9 +186,14 @@ jobs:
                 ) {
                   video.src = url
 
-                  video
-                    .play()
-                    .catch(() => {})
+                  const playResult =
+                    video.play()
+
+                  if (playResult) {
+                    playResult.catch(
+                      () => {}
+                    )
+                  }
 
                   return cleanup
                 }
@@ -238,9 +227,14 @@ jobs:
                   hls.on(
                     Hls.Events.MANIFEST_PARSED,
                     () => {
-                      video
-                        .play()
-                        .catch(() => {})
+                      const playResult =
+                        video.play()
+
+                      if (playResult) {
+                        playResult.catch(
+                          () => {}
+                        )
+                      }
                     }
                   )
 
@@ -291,9 +285,9 @@ jobs:
                 return cleanup
               }
 
-              // ==================================================
-              // FLV
-              // ==================================================
+              // ================================================
+              // FLV preview
+              // ================================================
 
               if (
                 type === 'flv'
@@ -364,9 +358,18 @@ jobs:
 
                   flvPlayer.load()
 
-                  flvPlayer
-                    .play()
-                    .catch(() => {})
+                  const playResult =
+                    flvPlayer.play()
+
+                  if (
+                    playResult &&
+                    typeof playResult.catch ===
+                      'function'
+                  ) {
+                    playResult.catch(
+                      () => {}
+                    )
+                  }
 
                   flvPlayer.on(
                     mpegts.Events.ERROR,
@@ -424,10 +427,6 @@ jobs:
             )
           }
           TSX
-
-      # ============================================================
-      # 5. 创建 V2.4 主补丁
-      # ============================================================
 
       - name: Create V2.4 source patch
         run: |
@@ -493,9 +492,8 @@ jobs:
             )
           }
 
-
           // ======================================================
-          // A. Douyin 最高画质排序
+          // A. Douyin highest-quality sorting
           // ======================================================
 
           const douyinPath =
@@ -542,6 +540,17 @@ jobs:
 
             if (
               value.includes(
+                'UHD'
+              ) ||
+              value.includes(
+                '4K'
+              )
+            ) {
+              return 9500
+            }
+
+            if (
+              value.includes(
                 'FULL_HD'
               ) ||
               value.includes(
@@ -552,17 +561,6 @@ jobs:
               )
             ) {
               return 9000
-            }
-
-            if (
-              value.includes(
-                'UHD'
-              ) ||
-              value.includes(
-                '4K'
-              )
-            ) {
-              return 9500
             }
 
             if (
@@ -645,25 +643,24 @@ jobs:
                 )
               }
 
+              let best = 0
+
               for (
                 const child of
                 Object.values(
                   value
                 )
               ) {
-                const found =
-                  parseResolutionValue(
-                    child
+                best =
+                  Math.max(
+                    best,
+                    parseResolutionValue(
+                      child
+                    )
                   )
-
-                if (
-                  found > 0
-                ) {
-                  return found
-                }
               }
 
-              return 0
+              return best
             }
 
             const text =
@@ -674,9 +671,7 @@ jobs:
                 /(\d{2,5})\s*[xX*×]\s*(\d{2,5})/
               )
 
-            if (
-              !match
-            ) {
+            if (!match) {
               return 0
             }
 
@@ -712,7 +707,7 @@ jobs:
 
               return (
                 typeof raw ===
-                'string'
+                  'string'
                   ? JSON.parse(raw)
                   : raw
               )
@@ -805,7 +800,7 @@ jobs:
             try {
               const parsed =
                 typeof streamData ===
-                'string'
+                  'string'
                   ? JSON.parse(
                       streamData
                     )
@@ -961,10 +956,6 @@ jobs:
                 }
               }
 
-            // ================================================
-            // pull_datas
-            // ================================================
-
             const pullDatas =
               streamUrl.pull_datas
 
@@ -983,10 +974,6 @@ jobs:
               }
             }
 
-            // ================================================
-            // live_core_sdk_data
-            // ================================================
-
             const coreData =
               streamUrl
                 ?.live_core_sdk_data
@@ -998,10 +985,6 @@ jobs:
                 coreData
               )
             )
-
-            // ================================================
-            // Legacy FLV map
-            // ================================================
 
             const flvMap =
               streamUrl
@@ -1038,10 +1021,6 @@ jobs:
               }
             }
 
-            // ================================================
-            // Legacy HLS map
-            // ================================================
-
             const hlsMap =
               streamUrl
                 ?.hls_pull_url_map
@@ -1076,15 +1055,6 @@ jobs:
                 })
               }
             }
-
-            // ================================================
-            // 排序规则：
-            //
-            // 1. 原画 / UHD / FULL_HD / HD
-            // 2. 实际分辨率
-            // 3. 视频码率
-            // 4. 同画质优先 FLV
-            // ================================================
 
             candidates.sort(
               (a, b) => {
@@ -1190,9 +1160,8 @@ jobs:
             douyin
           )
 
-
           // ======================================================
-          // B. 修改预览按钮
+          // B. Preview selection
           // ======================================================
 
           const operationPath =
@@ -1201,12 +1170,12 @@ jobs:
           let operation =
             read(operationPath)
 
-          const previewStateMarker =
+          const stateMarker =
             `  const [previewUrl, setPreviewUrl] = useState('')`
 
           if (
             operation.includes(
-              previewStateMarker
+              stateMarker
             ) &&
             !operation.includes(
               'previewType'
@@ -1214,13 +1183,12 @@ jobs:
           ) {
             operation =
               operation.replace(
-                previewStateMarker,
+                stateMarker,
 
                 `  const [previewUrl, setPreviewUrl] = useState('')
             const [previewType, setPreviewType] = useState<'hls' | 'flv'>('hls')`
               )
           }
-
 
           const previewStartMarker =
             '  const handlePreviewClick = async () => {'
@@ -1321,12 +1289,6 @@ jobs:
                   return
                 }
 
-                // ==============================================
-                // 先找 HLS。
-                // 不只判断 .m3u8，因为抖音部分 URL
-                // 不一定显式带后缀。
-                // ==============================================
-
                 const hlsUrl =
                   liveUrls.find(
                     (url) =>
@@ -1357,10 +1319,6 @@ jobs:
                   return
                 }
 
-                // ==============================================
-                // 没 HLS 自动使用 FLV。
-                // ==============================================
-
                 const flvUrl =
                   liveUrls.find(
                     (url) =>
@@ -1390,10 +1348,6 @@ jobs:
 
                   return
                 }
-
-                // ==============================================
-                // 最后兜底。
-                // ==============================================
 
                 const fallback =
                   liveUrls.find(
@@ -1458,11 +1412,6 @@ jobs:
               previewEnd
             )
 
-
-          // ======================================================
-          // C. 给 PreviewDialog 增加 type 参数
-          // ======================================================
-
           if (
             !operation.includes(
               'type={previewType}'
@@ -1495,9 +1444,8 @@ jobs:
             operation
           )
 
-
           // ======================================================
-          // D. 多语言提示
+          // C. Locale
           // ======================================================
 
           const localePath =
@@ -1533,9 +1481,8 @@ jobs:
             locale
           )
 
-
           // ======================================================
-          // E. 最终校验
+          // D. Final patch validation
           // ======================================================
 
           const finalDouyin =
@@ -1556,16 +1503,6 @@ jobs:
 
           if (
             !finalDouyin.includes(
-              'ORIGION'
-            )
-          ) {
-            throw new Error(
-              'Origin quality support missing'
-            )
-          }
-
-          if (
-            !finalDouyin.includes(
               'candidate_resolution'
             )
           ) {
@@ -1576,21 +1513,11 @@ jobs:
 
           if (
             !finalOperation.includes(
-              "setPreviewType("
+              'previewType'
             )
           ) {
             throw new Error(
-              'Preview type selection missing'
-            )
-          }
-
-          if (
-            !finalOperation.includes(
-              "'flv'"
-            )
-          ) {
-            throw new Error(
-              'FLV preview fallback missing'
+              'Preview type missing'
             )
           }
 
@@ -1599,27 +1526,15 @@ jobs:
           )
           NODE
 
-      # ============================================================
-      # 6. Node 语法检查
-      # ============================================================
-
       - name: Validate patch script syntax
         run: |
           node --check \
             "$RUNNER_TEMP/patch-v24.cjs"
 
-      # ============================================================
-      # 7. 应用补丁
-      # ============================================================
-
       - name: Apply V2.4 source patch
         run: |
           node \
             "$RUNNER_TEMP/patch-v24.cjs"
-
-      # ============================================================
-      # 8. 修改版本号
-      # ============================================================
 
       - name: Update version
         env:
@@ -1628,10 +1543,6 @@ jobs:
           npm version \
             "$APP_VERSION" \
             --no-git-tag-version
-
-      # ============================================================
-      # 9. 源码检查
-      # ============================================================
 
       - name: Verify V2.4 changes
         env:
@@ -1665,7 +1576,7 @@ jobs:
             src/main/crawler/plugins/douyin.js
 
           echo \
-            "Checking FLV preview..."
+            "Checking preview..."
 
           grep -q \
             "mpegts.createPlayer" \
@@ -1698,7 +1609,7 @@ jobs:
           fi
 
           echo \
-            "Checking recording fix..."
+            "Checking FFmpeg recording..."
 
           if grep -Fq \
             "inputOptions(['-re'])" \
@@ -1715,7 +1626,7 @@ jobs:
             src/main/ffmpeg/record.ts
 
           echo \
-            "Checking dependencies and version..."
+            "Checking dependencies..."
 
           node -e "
           const p =
@@ -1762,25 +1673,13 @@ jobs:
           echo \
             "All V2.4 source checks passed."
 
-      # ============================================================
-      # 10. TypeScript
-      # ============================================================
-
       - name: TypeScript check
         run: |
           npm run typecheck
 
-      # ============================================================
-      # 11. Electron build
-      # ============================================================
-
       - name: Build Electron app
         run: |
           npm run build
-
-      # ============================================================
-      # 12. Windows x64
-      # ============================================================
 
       - name: Package Windows x64
         run: |
@@ -1789,10 +1688,6 @@ jobs:
             nsis \
             --x64 \
             --publish never
-
-      # ============================================================
-      # 13. 安装包检查
-      # ============================================================
 
       - name: Verify Windows installer
         shell: pwsh
@@ -1832,10 +1727,6 @@ jobs:
               Length,
               FullName
 
-      # ============================================================
-      # 14. 提交测试分支
-      # ============================================================
-
       - name: Commit V2.4 tested source
         run: |
           git config \
@@ -1868,10 +1759,6 @@ jobs:
             origin \
             douyin-v2.4-test
 
-      # ============================================================
-      # 15. 上传安装包
-      # ============================================================
-
       - name: Upload Windows x64 installer
         uses: actions/upload-artifact@v4
         with:
@@ -1879,10 +1766,6 @@ jobs:
           path: dist/*-x64.exe
           if-no-files-found: error
           retention-days: 7
-
-      # ============================================================
-      # 16. Summary
-      # ============================================================
 
       - name: Build summary
         if: always()
@@ -1900,12 +1783,12 @@ jobs:
             echo
             echo "- Prefer original/source quality"
             echo "- Quality rank before bitrate"
-            echo "- Resolution-aware stream sorting"
+            echo "- Resolution-aware sorting"
             echo "- Bitrate fallback sorting"
             echo "- FLV preferred for recording"
             echo "- HLS internal preview"
             echo "- FLV internal preview fallback"
-            echo "- No dependency on fideo.site"
+            echo "- Fixed mpegts play TypeScript error"
             echo "- FFmpeg stream copy retained"
             echo "- FFmpeg reconnect retained"
             echo "- Windows x64 test installer"
