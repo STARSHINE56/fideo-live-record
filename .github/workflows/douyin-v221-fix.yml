@@ -1,0 +1,400 @@
+name: Douyin V2.2.1 Fix And Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号，例如 1.1.1"
+        required: true
+        default: "1.1.1"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  fix-build:
+    name: Repair V2.2 Patch And Build
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Extract and repair V2.2 Python patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          import os
+          import re
+          import textwrap
+
+          workflow = Path(
+              ".github/workflows/douyin-v22-all-in-one.yml"
+          )
+
+          if not workflow.exists():
+              raise RuntimeError(
+                  "找不到 douyin-v22-all-in-one.yml"
+              )
+
+          content = workflow.read_text(
+              encoding="utf-8"
+          )
+
+          lines = content.splitlines()
+
+          start = None
+          end = None
+
+          for index, line in enumerate(lines):
+              if "python - <<'PY'" in line:
+                  start = index + 1
+                  break
+
+          if start is None:
+              raise RuntimeError(
+                  "找不到 V2.2 Python 补丁开始位置"
+              )
+
+          for index in range(start, len(lines)):
+              if lines[index].strip() == "PY":
+                  end = index
+                  break
+
+          if end is None:
+              raise RuntimeError(
+                  "找不到 V2.2 Python 补丁结束位置"
+              )
+
+          script = "\n".join(
+              lines[start:end]
+          )
+
+          script = textwrap.dedent(
+              script
+          )
+
+          # ============================================================
+          # Repair invalid Python line-break assignments
+          # ============================================================
+
+          replacements = {
+              r'(?m)^crawler_path\s*=\s*\n\s*"src/main/crawler/index\.js"':
+                  'crawler_path = "src/main/crawler/index.js"',
+
+              r'(?m)^crawler\s*=\s*\n\s*read\(crawler_path\)':
+                  'crawler = read(crawler_path)',
+
+              r'(?m)^main_path\s*=\s*\n\s*"src/main/index\.ts"':
+                  'main_path = "src/main/index.ts"',
+
+              r'(?m)^main\s*=\s*\n\s*read\(main_path\)':
+                  'main = read(main_path)',
+
+              r'(?m)^app_path\s*=\s*\n\s*"src/renderer/src/App\.tsx"':
+                  'app_path = "src/renderer/src/App.tsx"',
+
+              r'(?m)^app\s*=\s*\n\s*read\(app_path\)':
+                  'app = read(app_path)',
+
+              r'(?m)^version\s*=\s*\n\s*os\.environ\["APP_VERSION"\]\.strip\(\)':
+                  'version = os.environ["APP_VERSION"].strip()',
+
+              r'(?m)^semver_pattern\s*=\s*\n\s*r"([^"]+)"':
+                  r'semver_pattern = r"\1"',
+
+              r'(?m)^package_path\s*=\s*\n\s*Path\("package\.json"\)':
+                  'package_path = Path("package.json")',
+
+              r'(?m)^lock_path\s*=\s*\n\s*Path\("package-lock\.json"\)':
+                  'lock_path = Path("package-lock.json")',
+
+              r'(?m)^builder_path\s*=\s*\n\s*"electron-builder\.yml"':
+                  'builder_path = "electron-builder.yml"',
+
+              r'(?m)^builder\s*=\s*\n\s*read\(builder_path\)':
+                  'builder = read(builder_path)',
+
+              r'(?m)^data\s*=\s*\n\s*read\(file\)':
+                  'data = read(file)'
+          }
+
+          for pattern, replacement in replacements.items():
+              script = re.sub(
+                  pattern,
+                  replacement,
+                  script
+              )
+
+          # ============================================================
+          # Repair multiline json.loads assignments
+          # ============================================================
+
+          script = re.sub(
+              r'''(?ms)^package\s*=\s*\n\s*json\.loads\(\s*package_path\.read_text\(\s*encoding="utf-8"\s*\)\s*\)''',
+              'package = json.loads(package_path.read_text(encoding="utf-8"))',
+              script
+          )
+
+          script = re.sub(
+              r'''(?ms)^lock\s*=\s*\n\s*json\.loads\(\s*lock_path\.read_text\(\s*encoding="utf-8"\s*\)\s*\)''',
+              'lock = json.loads(lock_path.read_text(encoding="utf-8"))',
+              script
+          )
+
+          # ============================================================
+          # Final generic repair for simple assignments
+          # ============================================================
+
+          script = re.sub(
+              r'''(?m)^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\n\s*([A-Za-z_][A-Za-z0-9_]*\([^()\n]*\))$''',
+              r'\1 = \2',
+              script
+          )
+
+          # ============================================================
+          # Syntax validation
+          # ============================================================
+
+          try:
+              ast.parse(script)
+          except SyntaxError as error:
+              print("")
+              print("Python syntax validation failed")
+              print(
+                  f"Line {error.lineno}: {error.msg}"
+              )
+
+              source_lines = script.splitlines()
+
+              if error.lineno:
+                  first = max(
+                      0,
+                      error.lineno - 5
+                  )
+
+                  last = min(
+                      len(source_lines),
+                      error.lineno + 4
+                  )
+
+                  print("")
+                  print("Nearby source:")
+
+                  for number in range(
+                      first,
+                      last
+                  ):
+                      print(
+                          f"{number + 1}: "
+                          f"{source_lines[number]}"
+                      )
+
+              raise
+
+          temp_path = (
+              Path(
+                  os.environ["RUNNER_TEMP"]
+              )
+              /
+              "douyin_v22_fixed.py"
+          )
+
+          temp_path.write_text(
+              script,
+              encoding="utf-8"
+          )
+
+          print("")
+          print(
+              "[OK] V2.2 Python syntax valid"
+          )
+
+          print(
+              f"[OK] Fixed script: {temp_path}"
+          )
+          PY
+
+      - name: Checkout parser test source
+        shell: bash
+        run: |
+          git fetch origin douyin-parser-v2-test
+
+          git switch -C \
+            douyin-v2.2-test \
+            origin/douyin-parser-v2-test
+
+      - name: Run repaired V2.2 patch
+        shell: bash
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          python \
+            "$RUNNER_TEMP/douyin_v22_fixed.py"
+
+      - name: Verify modified source
+        shell: bash
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          grep -q \
+            "getDesktopRoomWithFallback" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "resolveDouyinLiveUrl" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "Douyin unsigned parser success" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "Douyin A-Bogus parser success" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "STARSHINE56/fideo-live-record/releases/latest" \
+            src/main/index.ts
+
+          grep -q \
+            "STARSHINE56/fideo-live-record/releases/latest" \
+            src/renderer/src/App.tsx
+
+          grep -q \
+            "\"version\": \"$APP_VERSION\"" \
+            package.json
+
+          grep -q \
+            "provider: github" \
+            electron-builder.yml
+
+          grep -q \
+            "owner: STARSHINE56" \
+            electron-builder.yml
+
+          grep -q \
+            "repo: fideo-live-record" \
+            electron-builder.yml
+
+          echo \
+            "V2.2 source verification passed."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: "npm"
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+
+          Write-Host `
+            "Architecture: $env:PROCESSOR_ARCHITECTURE"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build Electron application
+        run: npm run build
+
+      - name: Package Windows x64
+        run: npx electron-builder --win nsis --x64
+
+      - name: Verify installer
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $package =
+            Get-Content `
+              package.json |
+            ConvertFrom-Json
+
+          if (
+            $package.version -ne
+            $env:EXPECTED_VERSION
+          ) {
+            throw `
+              "Version mismatch: expected $env:EXPECTED_VERSION but got $($package.version)"
+          }
+
+          $installer =
+            Get-ChildItem `
+              -Path dist `
+              -Filter "*-x64.exe"
+
+          if (
+            $installer.Count -eq 0
+          ) {
+            throw `
+              "No Windows x64 installer generated."
+          }
+
+          Write-Host `
+            "Version: $($package.version)"
+
+          $installer |
+            Select-Object `
+              Name,
+              Length,
+              FullName
+
+      - name: Commit V2.2.1 tested source
+        shell: bash
+        run: |
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            src/main/crawler/plugins/douyin.js \
+            src/main/crawler/index.js \
+            src/main/index.ts \
+            src/renderer/src/App.tsx \
+            package.json \
+            package-lock.json \
+            electron-builder.yml
+
+          if git diff --cached --quiet; then
+            echo \
+              "No source changes to commit."
+          else
+            git commit \
+              -m "Fix Douyin V2.2 parser update and version"
+          fi
+
+          git push \
+            --force \
+            origin \
+            douyin-v2.2-test
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-${{ inputs.version }}-douyin-v2.2.1-windows-x64
+          path: dist/*-x64.exe
+          if-no-files-found: error
+          retention-days: 7
