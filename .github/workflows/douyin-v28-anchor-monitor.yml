@@ -43,10 +43,6 @@ jobs:
         run: |
           npm ci
 
-      # ============================================================
-      # 1. 让 crawler 接受抖音主播主页
-      # ============================================================
-
       - name: Add Douyin profile hosts
         run: |
           node <<'NODE'
@@ -147,29 +143,8 @@ jobs:
           )
           NODE
 
-      # ============================================================
-      # 2. 增加主播主页解析
-      # ============================================================
-
       - name: Add Douyin anchor monitor parser
         run: |
-          node <<'NODE'
-          const fs = require('fs')
-
-          const path =
-            'src/main/crawler/plugins/douyin.js'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          # ========================================================
-          # 这里下面是 JS，不是 bash
-          # ========================================================
-          NODE
-
           cat > "$RUNNER_TEMP/patch-douyin.cjs" <<'NODE'
           const fs = require('fs')
 
@@ -181,10 +156,6 @@ jobs:
               path,
               'utf8'
             )
-
-          // ========================================================
-          // helper
-          // ========================================================
 
           if (
             !text.includes(
@@ -474,7 +445,6 @@ jobs:
                   bootstrap
                 )
             } catch {
-              // Ignore bootstrap failure.
             }
 
             const finalCookie = [
@@ -778,15 +748,6 @@ jobs:
               )
           }
 
-          // ========================================================
-          // 正确替换 baseGetDouYinLiveUrlsPlugin
-          //
-          // 实际源码顺序：
-          // baseGetMobileDouYinLiveUrlsPlugin
-          // baseGetDouYinLiveUrlsPlugin
-          // baseGetDouYinRoomInfoPlugin
-          // ========================================================
-
           {
             const start =
               text.indexOf(
@@ -864,10 +825,6 @@ jobs:
                 end
               )
           }
-
-          // ========================================================
-          // 替换 room info
-          // ========================================================
 
           {
             const start =
@@ -970,10 +927,6 @@ jobs:
 
           node "$RUNNER_TEMP/patch-douyin.cjs"
 
-      # ============================================================
-      # 3. 修改界面文案
-      # ============================================================
-
       - name: Update UI text
         run: |
           node <<'NODE'
@@ -988,53 +941,53 @@ jobs:
               'utf8'
             )
 
-          text =
-            text.replace(
+          const replacements = [
+            [
               "room_url: 'Stream URL',",
               "room_url: 'Live Room / Streamer Profile URL',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url_placeholder: 'Please enter the stream URL',",
               "room_url_placeholder: 'Enter a live-room URL or Douyin streamer profile URL',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url_can_not_be_empty: 'Stream URL cannot be empty',",
               "room_url_can_not_be_empty: 'Live room / streamer profile URL cannot be empty',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url_invalid: 'Stream URL is invalid',",
               "room_url_invalid: 'Live room / streamer profile URL is invalid',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url: '直播间地址',",
               "room_url: '直播间 / 主播主页地址',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url_placeholder: '请输入直播间地址',",
               "room_url_placeholder: '请输入直播间地址或抖音主播主页地址',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url_can_not_be_empty: '直播间地址不能为空',",
               "room_url_can_not_be_empty: '直播间或主播主页地址不能为空',"
-            )
-
-          text =
-            text.replace(
+            ],
+            [
               "room_url_invalid: '直播间地址不合法',",
               "room_url_invalid: '直播间或主播主页地址不合法',"
-            )
+            ]
+          ]
+
+          for (
+            const [
+              from,
+              to
+            ] of replacements
+          ) {
+            text =
+              text.replace(
+                from,
+                to
+              )
+          }
 
           fs.writeFileSync(
             path,
@@ -1047,10 +1000,6 @@ jobs:
           )
           NODE
 
-      # ============================================================
-      # 4. 版本
-      # ============================================================
-
       - name: Update version
         env:
           APP_VERSION: ${{ inputs.version }}
@@ -1058,10 +1007,6 @@ jobs:
           npm version \
             "$APP_VERSION" \
             --no-git-tag-version
-
-      # ============================================================
-      # 5. V2.8 检查
-      # ============================================================
 
       - name: Verify anchor monitor source
         run: |
@@ -1102,13 +1047,9 @@ jobs:
             src/renderer/src/locales/locales.js
 
           echo \
-            "V2.8 anchor monitor source exists."
+            "V2.8 anchor monitor source verification passed."
 
-      # ============================================================
-      # 6. 保留 V2.7 核心
-      # ============================================================
-
-      - name: Verify V2.7 core
+      - name: Verify V2.7 core retained
         run: |
           grep -q \
             "handleMonitorOnly" \
@@ -1135,13 +1076,9 @@ jobs:
             src/main/ffmpeg/record.ts
 
           echo \
-            "V2.7 recording core retained."
+            "V2.7 core retained."
 
-      # ============================================================
-      # 7. 预览必须继续不存在
-      # ============================================================
-
-      - name: Verify preview removed
+      - name: Verify preview remains removed
         run: |
           LEFTOVERS="$(
             grep -R \
@@ -1155,31 +1092,20 @@ jobs:
           if [ -n "$LEFTOVERS" ]
           then
             echo "$LEFTOVERS"
+
             exit 1
           fi
 
           echo \
             "Preview remains removed."
 
-      # ============================================================
-      # 8. TypeScript
-      # ============================================================
-
       - name: TypeScript check
         run: |
           npm run typecheck
 
-      # ============================================================
-      # 9. Build
-      # ============================================================
-
       - name: Build Electron
         run: |
           npm run build
-
-      # ============================================================
-      # 10. Windows x64
-      # ============================================================
 
       - name: Package Windows x64
         run: |
@@ -1189,7 +1115,7 @@ jobs:
             --x64 \
             --publish never
 
-      - name: Verify installer
+      - name: Verify Windows installer
         shell: pwsh
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -1215,7 +1141,7 @@ jobs:
             $installers.Count -eq 0
           ) {
             throw \
-              "Windows installer not generated."
+              "Windows x64 installer not generated."
           }
 
           $installers |
@@ -1225,10 +1151,6 @@ jobs:
               FullName |
             Format-Table \
               -AutoSize
-
-      # ============================================================
-      # 11. 成功后提交 V2.8 测试分支
-      # ============================================================
 
       - name: Commit V2.8
         run: |
@@ -1256,10 +1178,6 @@ jobs:
             origin \
             douyin-v2.8-anchor-monitor-test
 
-      # ============================================================
-      # 12. Artifact
-      # ============================================================
-
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -1274,17 +1192,18 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
         run: |
           {
-            echo "# Fideo Douyin V2.8"
+            echo "# Fideo Douyin V2.8 Anchor Monitor"
             echo
             echo "Version: \`$APP_VERSION\`"
             echo
             echo "Branch: \`douyin-v2.8-anchor-monitor-test\`"
             echo
-            echo "- Douyin live room supported"
-            echo "- Douyin streamer profile supported"
-            echo "- Offline anchor can stay in monitor list"
-            echo "- sec_user_id based lookup"
-            echo "- web_rid resolved when live"
-            echo "- Existing recording logic retained"
-            echo "- Existing notify-only mode retained"
+            echo "- Douyin live-room URL support retained"
+            echo "- Douyin streamer profile URL support added"
+            echo "- Offline streamer can remain in monitor list"
+            echo "- sec_user_id lookup added"
+            echo "- web_rid resolution added"
+            echo "- V2.7 recording logic retained"
+            echo "- Notify-only mode retained"
+            echo "- Preview remains removed"
           } >> "$GITHUB_STEP_SUMMARY"
