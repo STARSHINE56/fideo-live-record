@@ -1,10 +1,10 @@
-name: Douyin V2.7 UI Cleanup
+name: Douyin V2.7 UI Cleanup Stable
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "测试版本号，例如 1.1.8"
+        description: "测试版本号"
         required: true
         default: "1.1.8"
         type: string
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Remove Preview And Optimize UI
+    name: Remove Preview And Build Stable V2.7
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -23,13 +23,13 @@ jobs:
         shell: bash
 
     steps:
-      - name: Checkout V2.6.2 source
+      - name: Checkout V2.6.2
         uses: actions/checkout@v4
         with:
           ref: douyin-v2.6.2-test
           fetch-depth: 0
 
-      - name: Create V2.7 test branch
+      - name: Create V2.7 branch
         run: |
           git switch -C douyin-v2.7-ui-test
 
@@ -44,23 +44,35 @@ jobs:
           npm ci
 
       # ============================================================
-      # 彻底删除预览后端 / IPC
+      # 安全删除预览：不使用跨整个文件的大正则
       # ============================================================
 
-      - name: Remove preview backend and IPC
+      - name: Remove preview safely
         run: |
           cat > "$RUNNER_TEMP/remove-preview.cjs" <<'NODE'
           const fs = require('fs')
 
-          const read = (p) =>
-            fs.readFileSync(p, 'utf8')
+          function read(path) {
+            return fs.readFileSync(
+              path,
+              'utf8'
+            )
+          }
 
-          const write = (p, s) =>
-            fs.writeFileSync(p, s, 'utf8')
+          function write(
+            path,
+            content
+          ) {
+            fs.writeFileSync(
+              path,
+              content,
+              'utf8'
+            )
+          }
 
-          // ========================================================
-          // main/index.ts
-          // ========================================================
+          // ======================================================
+          // 1. src/main/index.ts
+          // ======================================================
 
           {
             const path =
@@ -69,14 +81,132 @@ jobs:
             let text =
               read(path)
 
+            // ----------------------------------
+            // 删除 preview-transcoder import
+            // 使用逐行方式，只删这一组 import
+            // ----------------------------------
+
+            const lines =
+              text.split(/\r?\n/)
+
+            const output = []
+
+            let skippingPreviewImport =
+              false
+
+            for (
+              let i = 0;
+              i < lines.length;
+              i++
+            ) {
+              const line =
+                lines[i]
+
+              if (
+                !skippingPreviewImport &&
+                line.includes(
+                  'import {'
+                )
+              ) {
+                const lookAhead =
+                  lines
+                    .slice(
+                      i,
+                      Math.min(
+                        i + 8,
+                        lines.length
+                      )
+                    )
+                    .join(
+                      '\n'
+                    )
+
+                if (
+                  lookAhead.includes(
+                    'startPreviewTranscoder'
+                  ) &&
+                  lookAhead.includes(
+                    "'./preview-transcoder'"
+                  )
+                ) {
+                  skippingPreviewImport =
+                    true
+                }
+              }
+
+              if (
+                skippingPreviewImport
+              ) {
+                if (
+                  line.includes(
+                    "'./preview-transcoder'"
+                  )
+                ) {
+                  skippingPreviewImport =
+                    false
+                }
+
+                continue
+              }
+
+              output.push(
+                line
+              )
+            }
+
+            text =
+              output.join(
+                '\n'
+              )
+
+            // ----------------------------------
+            // 删除常量 import 两行
+            // ----------------------------------
+
+            text =
+              text
+                .split(
+                  /\r?\n/
+                )
+                .filter(
+                  (
+                    line
+                  ) => {
+                    const trimmed =
+                      line.trim()
+
+                    return (
+                      trimmed !==
+                        'START_STREAM_PREVIEW,' &&
+                      trimmed !==
+                        'STOP_STREAM_PREVIEW,'
+                    )
+                  }
+                )
+                .join(
+                  '\n'
+                )
+
+            // ----------------------------------
+            // 删除两个预览 IPC
+            //
+            // 范围：
+            // NAV_BY_DEFAULT_BROWSER 后
+            // START_STREAM_PREVIEW
+            // ↓
+            // START_STREAM_RECORD 前
+            // ----------------------------------
+
             const navIndex =
               text.indexOf(
                 'ipcMain.handle(NAV_BY_DEFAULT_BROWSER'
               )
 
-            if (navIndex < 0) {
+            if (
+              navIndex < 0
+            ) {
               throw new Error(
-                'NAV_BY_DEFAULT_BROWSER handler not found'
+                'NAV handler missing'
               )
             }
 
@@ -86,94 +216,82 @@ jobs:
                 navIndex
               )
 
-            if (previewMarker < 0) {
+            const recordMarker =
+              text.indexOf(
+                'START_STREAM_RECORD',
+                navIndex
+              )
+
+            if (
+              previewMarker < 0
+            ) {
               throw new Error(
-                'Preview handler marker not found'
+                'Preview handler missing before cleanup'
               )
             }
 
-            const previewBlockStart =
+            if (
+              recordMarker < 0
+            ) {
+              throw new Error(
+                'Record handler missing'
+              )
+            }
+
+            const previewStart =
               text.lastIndexOf(
                 'ipcMain.handle',
                 previewMarker
               )
 
-            const recordMarker =
-              text.indexOf(
-                'START_STREAM_RECORD',
-                previewMarker
-              )
-
-            if (recordMarker < 0) {
-              throw new Error(
-                'START_STREAM_RECORD marker not found'
-              )
-            }
-
-            const recordBlockStart =
+            const recordStart =
               text.lastIndexOf(
                 'ipcMain.handle',
                 recordMarker
               )
 
             if (
-              previewBlockStart < 0 ||
-              recordBlockStart <=
-                previewBlockStart
+              previewStart < 0 ||
+              recordStart <=
+                previewStart
             ) {
               throw new Error(
-                'Invalid preview IPC boundaries'
+                'Preview IPC boundary invalid'
               )
             }
-
-            console.log(
-              'Removing preview IPC block:',
-              previewBlockStart,
-              '->',
-              recordBlockStart
-            )
 
             text =
               text.slice(
                 0,
-                previewBlockStart
+                previewStart
               ) +
               text.slice(
-                recordBlockStart
+                recordStart
               )
 
-            // 删除 preview transcoder import
-            text =
-              text.replace(
-                /import\s*\{[\s\S]*?startPreviewTranscoder[\s\S]*?\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
-                ''
-              )
+            // ----------------------------------
+            // 删除可能存在的关闭清理调用
+            // ----------------------------------
 
             text =
-              text.replace(
-                /import\s*\{[\s\S]*?stopPreviewTranscoder[\s\S]*?\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
-                ''
-              )
-
-            // 删除常量 import
-            text =
-              text.replace(
-                /^[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/gm,
-                ''
-              )
-
-            text =
-              text.replace(
-                /^[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/gm,
-                ''
-              )
-
-            // 删除关闭窗口时残留调用
-            text =
-              text.replace(
-                /^[ \t]*(?:void\s+|await\s+)?stopPreviewTranscoder\(\)[ \t]*;?[ \t]*\r?\n/gm,
-                ''
-              )
+              text
+                .split(
+                  /\r?\n/
+                )
+                .filter(
+                  (
+                    line
+                  ) => {
+                    return (
+                      !line.includes(
+                        'stopPreviewTranscoder()'
+                      )
+                    )
+                  }
+                )
+                .join(
+                  '\n'
+                )
 
             write(
               path,
@@ -181,28 +299,33 @@ jobs:
             )
           }
 
-          // ========================================================
-          // const.ts
-          // ========================================================
+          // ======================================================
+          // 2. src/const.ts
+          // ======================================================
 
           {
             const path =
               'src/const.ts'
 
-            let text =
+            const text =
               read(path)
-
-            text =
-              text.replace(
-                /^[ \t]*export const START_STREAM_PREVIEW = 'START_STREAM_PREVIEW'[ \t]*\r?\n/gm,
-                ''
-              )
-
-            text =
-              text.replace(
-                /^[ \t]*export const STOP_STREAM_PREVIEW = 'STOP_STREAM_PREVIEW'[ \t]*\r?\n/gm,
-                ''
-              )
+                .split(
+                  /\r?\n/
+                )
+                .filter(
+                  (
+                    line
+                  ) =>
+                    !line.includes(
+                      'START_STREAM_PREVIEW'
+                    ) &&
+                    !line.includes(
+                      'STOP_STREAM_PREVIEW'
+                    )
+                )
+                .join(
+                  '\n'
+                )
 
             write(
               path,
@@ -210,9 +333,9 @@ jobs:
             )
           }
 
-          // ========================================================
-          // preload/index.ts
-          // ========================================================
+          // ======================================================
+          // 3. preload/index.ts
+          // ======================================================
 
           {
             const path =
@@ -222,32 +345,47 @@ jobs:
               read(path)
 
             text =
-              text.replace(
-                /^[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/gm,
-                ''
-              )
-
-            text =
-              text.replace(
-                /^[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/gm,
-                ''
-              )
+              text
+                .split(
+                  /\r?\n/
+                )
+                .filter(
+                  (
+                    line
+                  ) =>
+                    !line.includes(
+                      'START_STREAM_PREVIEW'
+                    ) &&
+                    !line.includes(
+                      'STOP_STREAM_PREVIEW'
+                    )
+                )
+                .join(
+                  '\n'
+                )
 
             const start =
               text.indexOf(
                 'startStreamPreview:'
               )
 
-            const end =
-              text.indexOf(
-                'navByDefaultBrowser:',
-                start
-              )
-
             if (
-              start >= 0 &&
-              end > start
+              start >= 0
             ) {
+              const end =
+                text.indexOf(
+                  'navByDefaultBrowser:',
+                  start
+                )
+
+              if (
+                end < 0
+              ) {
+                throw new Error(
+                  'Preload preview API boundary invalid'
+                )
+              }
+
               const lineStart =
                 text.lastIndexOf(
                   '\n',
@@ -270,9 +408,9 @@ jobs:
             )
           }
 
-          // ========================================================
-          // preload/index.d.ts
-          // ========================================================
+          // ======================================================
+          // 4. preload/index.d.ts
+          // ======================================================
 
           {
             const path =
@@ -286,16 +424,23 @@ jobs:
                 'startStreamPreview:'
               )
 
-            const end =
-              text.indexOf(
-                'startStreamRecord:',
-                start
-              )
-
             if (
-              start >= 0 &&
-              end > start
+              start >= 0
             ) {
+              const end =
+                text.indexOf(
+                  'startStreamRecord:',
+                  start
+                )
+
+              if (
+                end < 0
+              ) {
+                throw new Error(
+                  'Preload type preview boundary invalid'
+                )
+              }
+
               const lineStart =
                 text.lastIndexOf(
                   '\n',
@@ -319,1309 +464,121 @@ jobs:
           }
 
           console.log(
-            'Preview backend and IPC removed.'
+            'Safe preview cleanup completed.'
           )
           NODE
 
           node "$RUNNER_TEMP/remove-preview.cjs"
 
       # ============================================================
-      # 重写操作栏，完全去掉预览
+      # 删除前端预览按钮及逻辑
       # ============================================================
 
-      - name: Rewrite operation bar
+      - name: Remove renderer preview code
         run: |
-          cat > src/renderer/src/components/StreamConfigList/components/OperationBar.tsx <<'TS'
-          import {
-            useEffect,
-            useRef,
-            useState
-          } from 'react'
-
-          import {
-            useTranslation
-          } from 'react-i18next'
-
-          import UseThemeIcon from '@/components/UseThemeIcon'
-          import Dialog from '@/components/Dialog'
-          import StreamConfigSheet from '@/components/StreamConfigSheet'
-
-          import {
-            useStreamConfigStore
-          } from '@/store/useStreamConfigStore'
-
-          import {
-            useDefaultSettingsStore
-          } from '@/store/useDefaultSettingsStore'
-
-          import {
-            useToast
-          } from '@/hooks/useToast'
-
-          import {
-            StreamStatus,
-            useXizhiToPushNotification
-          } from '@/lib/utils'
-
-          import emitter from '@/lib/bus'
-
-          import darkPlayIcon from '@/assets/images/dark/play.svg'
-          import lightPlayIcon from '@/assets/images/light/play.svg'
-
-          import darkPauseIcon from '@/assets/images/dark/pause.svg'
-          import lightPauseIcon from '@/assets/images/light/pause.svg'
-
-          import darkSettingIcon from '@/assets/images/dark/setting.svg'
-          import lightSettingIcon from '@/assets/images/light/setting.svg'
-
-          import darkDeleteIcon from '@/assets/images/dark/close.svg'
-          import lightDeleteIcon from '@/assets/images/light/close.svg'
-
-          import {
-            CRAWLER_ERROR_CODE,
-            SUCCESS_CODE,
-            UNKNOWN_CODE,
-            FFMPEG_ERROR_CODE,
-            crawlerErrorCodeToI18nMessage
-          } from '../../../../../code'
-
-          import {
-            RECORD_END_NOT_USER_STOP
-          } from '../../../../../const'
-
-          interface Props {
-            streamConfig: IStreamConfig
-          }
-
-          export default function OperationBar(
-            {
-              streamConfig
-            }: Props
-          ) {
-            const {
-              t
-            } =
-              useTranslation()
-
-            const {
-              toast
-            } =
-              useToast()
-
-            const timer =
-              useRef<NodeJS.Timeout>()
-
-            const liveNotifiedRef =
-              useRef(false)
-
-            const [
-              sheetOpen,
-              setSheetOpen
-            ] =
-              useState(false)
-
-            const [
-              deleteDialogOpen,
-              setDeleteDialogOpen
-            ] =
-              useState(false)
-
-            const defaultSettings =
-              useDefaultSettingsStore(
-                (
-                  state
-                ) =>
-                  state.defaultSettingsConfig
-              )
-
-            const {
-              removeStreamConfig,
-              updateStreamConfig
-            } =
-              useStreamConfigStore(
-                (
-                  state
-                ) => ({
-                  removeStreamConfig:
-                    state.removeStreamConfig,
-
-                  updateStreamConfig:
-                    state.updateStreamConfig
-                })
-              )
-
-            const scheduleMonitor =
-              () => {
-                if (
-                  timer.current
-                ) {
-                  clearTimeout(
-                    timer.current
-                  )
-                }
-
-                timer.current =
-                  setTimeout(
-                    () => {
-                      void monitorOnly(
-                        false
-                      )
-                    },
-
-                    streamConfig.interval *
-                      1000
-                  )
-              }
-
-            const monitorOnly =
-              async (
-                first =
-                  true
-              ) => {
-                if (first) {
-                  liveNotifiedRef.current =
-                    false
-
-                  await updateStreamConfig(
-                    {
-                      ...streamConfig,
-
-                      status:
-                        StreamStatus.MONITORING
-                    },
-
-                    streamConfig.id
-                  )
-                }
-
-                const result =
-                  await window.api
-                    .getLiveUrls({
-                      roomUrl:
-                        streamConfig.roomUrl,
-
-                      proxy:
-                        streamConfig.proxy,
-
-                      cookie:
-                        streamConfig.cookie,
-
-                      title:
-                        streamConfig.title
-                    })
-                    .catch(
-                      () => ({
-                        code:
-                          UNKNOWN_CODE,
-
-                        liveUrls:
-                          [] as string[]
-                      })
-                    )
-
-                const latest =
-                  useStreamConfigStore
-                    .getState()
-                    .streamConfigList
-                    .find(
-                      (
-                        item
-                      ) =>
-                        item.id ===
-                        streamConfig.id
-                    )
-
-                if (
-                  !latest ||
-                  latest.status ===
-                    StreamStatus.NOT_STARTED
-                ) {
-                  return
-                }
-
-                if (
-                  result.code ===
-                    SUCCESS_CODE &&
-                  Array.isArray(
-                    result.liveUrls
-                  ) &&
-                  result.liveUrls.length >
-                    0
-                ) {
-                  if (
-                    !liveNotifiedRef.current
-                  ) {
-                    liveNotifiedRef.current =
-                      true
-
-                    const message =
-                      t(
-                        'stream_config.live_detected_notify',
-                        {
-                          title:
-                            streamConfig.title
-                        }
-                      )
-
-                    window.api
-                      .showNotification(
-                        t(
-                          'stream_config.live_detected'
-                        ),
-                        message
-                      )
-
-                    toast({
-                      title:
-                        streamConfig.title,
-
-                      description:
-                        t(
-                          'stream_config.live_detected'
-                        )
-                    })
-
-                    if (
-                      defaultSettings
-                        .xizhiKey
-                    ) {
-                      useXizhiToPushNotification({
-                        key:
-                          defaultSettings
-                            .xizhiKey,
-
-                        title:
-                          streamConfig.title,
-
-                        content:
-                          t(
-                            'stream_config.live_detected'
-                          )
-                      })
-                    }
-                  }
-
-                  scheduleMonitor()
-
-                  return
-                }
-
-                if (
-                  result.code ===
-                  CRAWLER_ERROR_CODE.NOT_URLS
-                ) {
-                  liveNotifiedRef.current =
-                    false
-
-                  scheduleMonitor()
-
-                  return
-                }
-
-                if (
-                  result.code ===
-                  UNKNOWN_CODE
-                ) {
-                  scheduleMonitor()
-
-                  return
-                }
-
-                if (first) {
-                  const msg =
-                    crawlerErrorCodeToI18nMessage(
-                      result.code,
-                      'error.get_line.'
-                    )
-
-                  toast({
-                    title:
-                      streamConfig.title,
-
-                    description:
-                      t(
-                        msg
-                      ),
-
-                    variant:
-                      'destructive'
-                  })
-                }
-
-                scheduleMonitor()
-              }
-
-            const startRecord =
-              async (
-                first =
-                  true
-              ) => {
-                if (first) {
-                  await updateStreamConfig(
-                    {
-                      ...streamConfig,
-
-                      status:
-                        StreamStatus.PREPARING_TO_RECORD
-                    },
-
-                    streamConfig.id
-                  )
-                }
-
-                const {
-                  code
-                } =
-                  await window.api
-                    .startStreamRecord(
-                      JSON.stringify(
-                        streamConfig
-                      )
-                    )
-                    .catch(
-                      () => ({
-                        code:
-                          UNKNOWN_CODE
-                      })
-                    )
-
-                const latest =
-                  useStreamConfigStore
-                    .getState()
-                    .streamConfigList
-                    .find(
-                      (
-                        item
-                      ) =>
-                        item.id ===
-                        streamConfig.id
-                    )
-
-                if (
-                  !latest ||
-                  latest.status ===
-                    StreamStatus.NOT_STARTED
-                ) {
-                  return
-                }
-
-                if (
-                  code ===
-                  SUCCESS_CODE
-                ) {
-                  await updateStreamConfig(
-                    {
-                      ...streamConfig,
-
-                      status:
-                        StreamStatus.RECORDING
-                    },
-
-                    streamConfig.id
-                  )
-
-                  toast({
-                    title:
-                      streamConfig.title,
-
-                    description:
-                      t(
-                        'start_record'
-                      )
-                  })
-
-                  return
-                }
-
-                if (
-                  code ===
-                    CRAWLER_ERROR_CODE.NOT_URLS ||
-                  code ===
-                    UNKNOWN_CODE
-                ) {
-                  if (
-                    timer.current
-                  ) {
-                    clearTimeout(
-                      timer.current
-                    )
-                  }
-
-                  timer.current =
-                    setTimeout(
-                      () => {
-                        void startRecord(
-                          false
-                        )
-                      },
-
-                      streamConfig.interval *
-                        1000
-                    )
-
-                  await updateStreamConfig(
-                    {
-                      ...streamConfig,
-
-                      status:
-                        StreamStatus.MONITORING
-                    },
-
-                    streamConfig.id
-                  )
-
-                  if (first) {
-                    toast({
-                      title:
-                        streamConfig.title,
-
-                      description:
-                        t(
-                          'error.start_record.not_urls'
-                        )
-                    })
-                  }
-
-                  return
-                }
-
-                if (
-                  Object.values(
-                    FFMPEG_ERROR_CODE
-                  ).includes(
-                    code
-                  )
-                ) {
-                  return
-                }
-
-                const msg =
-                  crawlerErrorCodeToI18nMessage(
-                    code,
-                    'error.start_record.'
-                  )
-
-                await updateStreamConfig(
-                  {
-                    ...streamConfig,
-
-                    status:
-                      StreamStatus.NOT_STARTED
-                  },
-
-                  streamConfig.id
-                )
-
-                toast({
-                  title:
-                    streamConfig.title,
-
-                  description:
-                    t(
-                      msg
-                    ),
-
-                  variant:
-                    'destructive'
-                })
-              }
-
-            const handleStart =
-              () => {
-                if (
-                  streamConfig.autoRecord ===
-                  false
-                ) {
-                  void monitorOnly(
-                    true
-                  )
-
-                  return
-                }
-
-                void startRecord(
-                  true
-                )
-              }
-
-            const handleStop =
-              async () => {
-                if (
-                  timer.current
-                ) {
-                  clearTimeout(
-                    timer.current
-                  )
-                }
-
-                liveNotifiedRef.current =
-                  false
-
-                if (
-                  streamConfig.autoRecord ===
-                  false
-                ) {
-                  await updateStreamConfig(
-                    {
-                      ...streamConfig,
-
-                      status:
-                        StreamStatus.NOT_STARTED
-                    },
-
-                    streamConfig.id
-                  )
-
-                  return
-                }
-
-                await window.api
-                  .stopStreamRecord(
-                    streamConfig.id
-                  )
-              }
-
-            useEffect(
-              () => {
-                const onEnd =
-                  (
-                    id: string
-                  ) => {
-                    if (
-                      id !==
-                      streamConfig.id
-                    ) {
-                      return
-                    }
-
-                    if (
-                      timer.current
-                    ) {
-                      clearTimeout(
-                        timer.current
-                      )
-                    }
-
-                    timer.current =
-                      setTimeout(
-                        handleStart,
-                        2000
-                      )
-                  }
-
-                emitter.on(
-                  RECORD_END_NOT_USER_STOP,
-                  onEnd as any
-                )
-
-                return () => {
-                  emitter.off(
-                    RECORD_END_NOT_USER_STOP,
-                    onEnd as any
-                  )
-                }
-              },
-
-              [
-                streamConfig
-              ]
-            )
-
-            useEffect(
-              () => {
-                return () => {
-                  if (
-                    timer.current
-                  ) {
-                    clearTimeout(
-                      timer.current
-                    )
-                  }
-                }
-              },
-
-              []
-            )
-
-            return (
-              <>
-                <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-background/80 p-1 shadow-sm">
-                  {streamConfig.status ===
-                  StreamStatus.NOT_STARTED ? (
-                    <UseThemeIcon
-                      className="h-5 w-5 cursor-pointer"
-                      dark={
-                        darkPlayIcon
-                      }
-                      light={
-                        lightPlayIcon
-                      }
-                      handleClick={
-                        handleStart
-                      }
-                    />
-                  ) : (
-                    <UseThemeIcon
-                      className="h-5 w-5 cursor-pointer"
-                      dark={
-                        darkPauseIcon
-                      }
-                      light={
-                        lightPauseIcon
-                      }
-                      handleClick={
-                        handleStop
-                      }
-                    />
-                  )}
-
-                  <UseThemeIcon
-                    className="h-5 w-5 cursor-pointer"
-                    dark={
-                      darkSettingIcon
-                    }
-                    light={
-                      lightSettingIcon
-                    }
-                    handleClick={
-                      () =>
-                        setSheetOpen(
-                          true
-                        )
-                    }
-                    tooltipContent={
-                      t(
-                        'stream_config.edit'
-                      )
-                    }
-                  />
-
-                  <UseThemeIcon
-                    className="h-5 w-5 cursor-pointer"
-                    dark={
-                      darkDeleteIcon
-                    }
-                    light={
-                      lightDeleteIcon
-                    }
-                    handleClick={
-                      () =>
-                        setDeleteDialogOpen(
-                          true
-                        )
-                    }
-                  />
-                </div>
-
-                <StreamConfigSheet
-                  streamConfig={
-                    streamConfig
-                  }
-                  setSheetOpen={
-                    setSheetOpen
-                  }
-                  sheetOpen={
-                    sheetOpen
-                  }
-                  type="edit"
-                />
-
-                <Dialog
-                  title={
-                    t(
-                      'stream_config.confirm_delete',
-                      {
-                        title:
-                          streamConfig.title
-                      }
-                    )
-                  }
-                  btnText={
-                    t(
-                      'stream_config.delete'
-                    )
-                  }
-                  dialogOpen={
-                    deleteDialogOpen
-                  }
-                  onOpenChange={
-                    setDeleteDialogOpen
-                  }
-                  handleBtnClick={
-                    async () => {
-                      await removeStreamConfig(
-                        streamConfig.id
-                      )
-
-                      setDeleteDialogOpen(
-                        false
-                      )
-                    }
-                  }
-                  variant="destructive"
-                />
-              </>
-            )
-          }
-          TS
-
-      # ============================================================
-      # 状态条
-      # ============================================================
-
-      - name: Rewrite status progress
-        run: |
-          cat > src/renderer/src/components/StreamConfigList/components/Progress.tsx <<'TS'
-          import {
-            StreamStatus
-          } from '@renderer/lib/utils'
-
-          export default function Progress(
-            {
-              status
-            }: {
-              status: number
-            }
-          ) {
-            if (
-              status ===
-              StreamStatus.NOT_STARTED
-            ) {
-              return (
-                <div className="h-1.5 w-full rounded-full bg-muted" />
-              )
-            }
-
-            if (
-              status ===
-              StreamStatus.MONITORING
-            ) {
-              return (
-                <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-blue-500/15">
-                  <div className="absolute left-0 top-0 h-full w-12 rounded-full bg-blue-500 animate-progress" />
-                </div>
-              )
-            }
-
-            if (
-              status ===
-              StreamStatus.RECORDING
-            ) {
-              return (
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-red-500/20">
-                  <div className="h-full w-full animate-pulse rounded-full bg-red-500" />
-                </div>
-              )
-            }
-
-            return (
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-amber-500/20">
-                <div className="h-full w-2/3 animate-pulse rounded-full bg-amber-500" />
-              </div>
-            )
-          }
-          TS
-
-      # ============================================================
-      # 卡片 UI
-      # ============================================================
-
-      - name: Rewrite stream card
-        run: |
-          cat > src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx <<'TS'
-          import {
-            useTranslation
-          } from 'react-i18next'
-
-          import {
-            Card,
-            CardContent,
-            CardDescription,
-            CardHeader,
-            CardTitle
-          } from '@/shadcn/ui/card'
-
-          import {
-            Badge
-          } from '@/shadcn/ui/badge'
-
-          import Progress from './Progress'
-          import OperationBar from './OperationBar'
-
-          import {
-            MoveCardDropdownMenu
-          } from './MoveCardDropDownMenu'
-
-          import {
-            useFfmpegProgressInfoStore
-          } from '@/store/useFfmpegProgressInfoStore'
-
-          import {
-            useNavSelectedStatusStore
-          } from '@/store/useNavSelectedStatusStore'
-
-          interface Props {
-            streamConfig: IStreamConfig
-          }
-
-          const statusMap:
-            Record<number, string> = {
-              0:
-                'stream_config.not_started',
-
-              1:
-                'stream_config.preparing_to_record',
-
-              2:
-                'stream_config.monitoring',
-
-              3:
-                'stream_config.recording',
-
-              4:
-                'stream_config.video_format_conversion'
-            }
-
-          export default function StreamConfigCard(
-            {
-              streamConfig
-            }: Props
-          ) {
-            const {
-              t
-            } =
-              useTranslation()
-
-            const progress =
-              useFfmpegProgressInfoStore(
-                (
-                  state
-                ) =>
-                  state.ffmpegProgressInfo[
-                    streamConfig.id
-                  ]
-              )
-
-            const filter =
-              useNavSelectedStatusStore(
-                (
-                  state
-                ) =>
-                  state.navSelectedStatus
-              )
-
-            const size =
-              progress?.targetSize
-                ? (
-                    progress.targetSize /
-                    1024
-                  ).toFixed(
-                    1
-                  ) +
-                  ' MB'
-                : '--'
-
-            return (
-              <Card className="stream-card overflow-hidden shadow-sm">
-                <CardHeader className="pb-4">
-                  <div className="flex min-w-0 items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <CardTitle className="max-w-[480px] truncate text-base">
-                          {
-                            streamConfig.title
-                          }
-                        </CardTitle>
-
-                        <Badge variant="outline">
-                          {t(
-                            statusMap[
-                              streamConfig.status
-                            ] ||
-                              statusMap[
-                                0
-                              ]
-                          )}
-                        </Badge>
-
-                        <Badge
-                          variant="outline"
-                          className={
-                            streamConfig.autoRecord
-                              ? 'border-emerald-400 text-emerald-600'
-                              : 'border-blue-400 text-blue-600'
-                          }
-                        >
-                          {streamConfig.autoRecord
-                            ? t(
-                                'stream_config.auto_record'
-                              )
-                            : t(
-                                'stream_config.notify_only'
-                              )}
-                        </Badge>
-                      </div>
-
-                      <CardDescription className="mt-2">
-                        <button
-                          type="button"
-                          className="block max-w-full truncate text-left underline underline-offset-2"
-                          onClick={
-                            () =>
-                              window.api.navByDefaultBrowser(
-                                streamConfig.roomUrl
-                              )
-                          }
-                        >
-                          {
-                            streamConfig.roomUrl
-                          }
-                        </button>
-                      </CardDescription>
-                    </div>
-
-                    <OperationBar
-                      streamConfig={
-                        streamConfig
-                      }
-                    />
-                  </div>
-                </CardHeader>
-
-                <CardContent className="space-y-3">
-                  <Progress
-                    status={
-                      streamConfig.status
-                    }
-                  />
-
-                  <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-                    <div className="flex flex-wrap gap-5">
-                      <span>
-                        ⏱{' '}
-                        {
-                          progress?.timemark ||
-                          '--:--:--'
-                        }
-                      </span>
-
-                      {(streamConfig.segmentTime ===
-                        '' ||
-                        streamConfig.segmentTime ===
-                          '0') && (
-                        <span>
-                          ◫{' '}
-                          {
-                            size
-                          }
-                        </span>
-                      )}
-
-                      <span>
-                        ⟳{' '}
-                        {
-                          streamConfig.interval
-                        }
-                        s
-                      </span>
-                    </div>
-
-                    {filter ===
-                      '-1' && (
-                      <MoveCardDropdownMenu
-                        streamConfig={
-                          streamConfig
-                        }
-                      />
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            )
-          }
-          TS
-
-      # ============================================================
-      # 全局布局 / 状态筛选 / 设置页
-      # ============================================================
-
-      - name: Optimize UI layout
-        run: |
-          cat > "$RUNNER_TEMP/ui.cjs" <<'NODE'
+          cat > "$RUNNER_TEMP/remove-renderer-preview.cjs" <<'NODE'
           const fs = require('fs')
 
-          const read = (p) =>
-            fs.readFileSync(p, 'utf8')
+          const path =
+            'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
 
-          const write = (p, s) =>
-            fs.writeFileSync(p, s, 'utf8')
-
-          // App root
-          {
-            const path =
-              'src/renderer/src/App.tsx'
-
-            let text =
-              read(path)
-
-            text =
-              text.replace(
-                /<TitleBar\s*\/>\s*<NavBar\s*\/>\s*<StreamConfigList\s*\/>\s*<Toaster\s*\/>/m,
-
-                `<div className="flex h-screen flex-col overflow-hidden bg-muted/20">
-                  <div className="shrink-0 bg-background">
-                    <TitleBar />
-                  </div>
-
-                  <div className="shrink-0 border-b bg-background">
-                    <NavBar />
-                  </div>
-
-                  <div className="min-h-0 flex-1">
-                    <StreamConfigList />
-                  </div>
-                </div>
-
-                <Toaster />`
-              )
-
-            write(
+          let text =
+            fs.readFileSync(
               path,
-              text
+              'utf8'
             )
-          }
 
-          // Stream list
-          {
-            const path =
-              'src/renderer/src/components/StreamConfigList/StreamConfigList.tsx'
-
-            let text =
-              read(path)
-
-            text =
-              text.replace(
-                'show-scrollbar flex flex-col gap-[12px] p-[24px] overflow-y-auto h-[calc(100vh-80px)]',
-
-                'show-scrollbar mx-auto flex h-full w-full max-w-[1100px] flex-col gap-3 overflow-y-auto px-5 pb-6 pt-4'
+          // imports
+          text =
+            text
+              .split(/\r?\n/)
+              .filter(
+                (
+                  line
+                ) =>
+                  !line.includes(
+                    'StreamPreviewDialog'
+                  ) &&
+                  !line.includes(
+                    'darkPreviewIcon'
+                  ) &&
+                  !line.includes(
+                    'lightPreviewIcon'
+                  )
+              )
+              .join(
+                '\n'
               )
 
-            write(
-              path,
-              text
-            )
-          }
-
-          // Nav filter
-          {
-            const path =
-              'src/renderer/src/components/NavBar/NavBar.tsx'
-
-            let text =
-              read(path)
-
-            if (
-              !text.includes(
-                'value="0"'
+          // state
+          text =
+            text
+              .replace(
+                /^\s*const\s+\[isLoadingPreview[\s\S]*?\]\s*=\s*useState[\s\S]*?\n/gm,
+                ''
               )
-            ) {
-              text =
-                text.replace(
-                  /<SelectItem value="-1">[\s\S]*?<\/SelectItem>\s*<SelectItem value="2">/m,
-
-                  `<SelectItem value="-1">
-                    {t('stream_config.all')}
-                  </SelectItem>
-
-                  <SelectItem value="0">
-                    {t('stream_config.not_started')}
-                  </SelectItem>
-
-                  <SelectItem value="1">
-                    {t('stream_config.preparing_to_record')}
-                  </SelectItem>
-
-                  <SelectItem value="2">`
-                )
-            }
-
-            if (
-              !text.includes(
-                'value="4"'
+              .replace(
+                /^\s*const\s+\[previewOpen[\s\S]*?\]\s*=\s*useState[\s\S]*?\n/gm,
+                ''
               )
-            ) {
-              text =
-                text.replace(
-                  /(<SelectItem value="3">[\s\S]*?<\/SelectItem>)/m,
+              .replace(
+                /^\s*const\s+\[previewUrl[\s\S]*?\]\s*=\s*useState[\s\S]*?\n/gm,
+                ''
+              )
+              .replace(
+                /^\s*const\s+\[previewType[\s\S]*?\]\s*=\s*useState[\s\S]*?\n/gm,
+                ''
+              )
 
-                  `$1
-
-                  <SelectItem value="4">
-                    {t('stream_config.video_format_conversion')}
-                  </SelectItem>`
-                )
-            }
-
-            write(
-              path,
-              text
+          // preview functions
+          const previewFunctionStart =
+            text.indexOf(
+              '  const handlePreviewOpenChange'
             )
-          }
 
-          // Sheet spacing
-          for (
-            const path of [
-              'src/renderer/src/components/StreamConfigSheet.tsx',
-
-              'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx'
-            ]
+          if (
+            previewFunctionStart >= 0
           ) {
-            let text =
-              read(path)
-
-            text =
-              text.replace(
-                'SheetContent className="flex flex-col"',
-
-                'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
+            const nextEffect =
+              text.indexOf(
+                '  useEffect(() => {',
+                previewFunctionStart
               )
-
-            text =
-              text.replace(
-                'form className="space-y-8"',
-
-                'form className="space-y-5"'
-              )
-
-            write(
-              path,
-              text
-            )
-          }
-
-          // Locale
-          {
-            const path =
-              'src/renderer/src/locales/locales.js'
-
-            let text =
-              read(path)
 
             if (
-              !text.includes(
-                "notify_only: 'Notify only'"
-              )
+              nextEffect >
+              previewFunctionStart
             ) {
               text =
-                text.replace(
-                  /all:\s*'All',/,
-
-                  "all: 'All',\n      notify_only: 'Notify only',"
+                text.slice(
+                  0,
+                  previewFunctionStart
+                ) +
+                text.slice(
+                  nextEffect
                 )
             }
-
-            if (
-              !text.includes(
-                "notify_only: '仅通知'"
-              )
-            ) {
-              text =
-                text.replace(
-                  /all:\s*'全部',/,
-
-                  "all: '全部',\n      notify_only: '仅通知',"
-                )
-            }
-
-            text =
-              text
-                .replace(
-                  /^\s*preview:\s*'.*?',\s*$/gm,
-                  ''
-                )
-                .replace(
-                  /^\s*preview_failed:\s*'.*?',\s*$/gm,
-                  ''
-                )
-                .replace(
-                  /^\s*preview_hls_unavailable:\s*'.*?',\s*$/gm,
-                  ''
-                )
-                .replace(
-                  /^\s*preview_stream_unavailable:\s*'.*?',\s*$/gm,
-                  ''
-                )
-
-            write(
-              path,
-              text
-            )
           }
 
-          // Restore CSP
-          {
-            const path =
-              'src/renderer/index.html'
-
-            let text =
-              read(path)
-
-            text =
-              text.replace(
-                /content="default-src[^"]+"/,
-
-                `content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://api.xunhupay.com; connect-src 'self' https://xizhi.qqoq.net https:;"`
-              )
-
-            write(
-              path,
-              text
+          // dialog JSX
+          text =
+            text.replace(
+              /\s*<StreamPreviewDialog[\s\S]*?\/>\s*/m,
+              '\n'
             )
-          }
 
-          console.log(
-            'UI layout optimized.'
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
           )
           NODE
 
-          node "$RUNNER_TEMP/ui.cjs"
-
-      - name: Improve UI CSS
-        run: |
-          cat >> src/renderer/src/assets/css/globals.css <<'CSS'
-
-          body {
-            overflow: hidden;
-          }
-
-          .stream-card {
-            transition:
-              box-shadow 160ms ease,
-              border-color 160ms ease;
-          }
-
-          .stream-card:hover {
-            box-shadow:
-              0 6px 22px
-              rgba(0, 0, 0, 0.07);
-          }
-
-          .dark .stream-card:hover {
-            box-shadow:
-              0 6px 22px
-              rgba(0, 0, 0, 0.25);
-          }
-          CSS
+          node "$RUNNER_TEMP/remove-renderer-preview.cjs"
 
       # ============================================================
-      # 删除预览依赖 / 文件
+      # 删除文件和依赖
       # ============================================================
-
-      - name: Remove preview dependencies
-        run: |
-          npm uninstall \
-            hls.js \
-            mpegts.js
 
       - name: Remove preview files
         run: |
@@ -1632,6 +589,123 @@ jobs:
             src/renderer/src/assets/images/dark/preview.svg \
             src/renderer/src/assets/images/light/preview.svg
 
+      - name: Remove preview dependencies
+        run: |
+          npm uninstall \
+            hls.js \
+            mpegts.js
+
+      # ============================================================
+      # 轻量 UI 优化
+      # 先不再大面积重写业务代码
+      # ============================================================
+
+      - name: Apply stable UI polish
+        run: |
+          cat > "$RUNNER_TEMP/ui.cjs" <<'NODE'
+          const fs = require('fs')
+
+          function patch(
+            path,
+            callback
+          ) {
+            let text =
+              fs.readFileSync(
+                path,
+                'utf8'
+              )
+
+            text =
+              callback(
+                text
+              )
+
+            fs.writeFileSync(
+              path,
+              text,
+              'utf8'
+            )
+          }
+
+          // 主列表更合理的宽度和间距
+          patch(
+            'src/renderer/src/components/StreamConfigList/StreamConfigList.tsx',
+            (
+              text
+            ) =>
+              text.replace(
+                'show-scrollbar flex flex-col gap-[12px] p-[24px] overflow-y-auto h-[calc(100vh-80px)]',
+
+                'show-scrollbar mx-auto flex h-[calc(100vh-80px)] w-full max-w-[1100px] flex-col gap-3 overflow-y-auto px-5 py-4'
+              )
+          )
+
+          // 操作按钮不绝对定位，避免标题重叠
+          patch(
+            'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx',
+            (
+              text
+            ) =>
+              text.replace(
+                'className="flex absolute right-0 gap-2"',
+
+                'className="flex shrink-0 items-center gap-2 rounded-lg border bg-background/80 p-1.5 shadow-sm"'
+              )
+          )
+
+          // 卡片间距
+          patch(
+            'src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx',
+            (
+              text
+            ) =>
+              text
+                .replace(
+                  'className="relative"',
+                  'className="relative overflow-hidden shadow-sm transition-shadow hover:shadow-md"'
+                )
+                .replace(
+                  'truncate',
+                  'truncate'
+                )
+          )
+
+          // 设置页缩短垂直间距
+          for (
+            const path of [
+              'src/renderer/src/components/StreamConfigSheet.tsx',
+
+              'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx'
+            ]
+          ) {
+            patch(
+              path,
+              (
+                text
+              ) =>
+                text
+                  .replace(
+                    'form className="space-y-8"',
+                    'form className="space-y-5"'
+                  )
+                  .replace(
+                    'SheetContent className="flex flex-col"',
+                    'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
+                  )
+            )
+          }
+
+          console.log(
+            'Stable UI polish complete.'
+          )
+          NODE
+
+          node "$RUNNER_TEMP/ui.cjs"
+
+      # ============================================================
+      # 版本
+      # ============================================================
+
       - name: Update version
         env:
           APP_VERSION: ${{ inputs.version }}
@@ -1641,11 +715,13 @@ jobs:
             --no-git-tag-version
 
       # ============================================================
-      # 完整检查
+      # 删除完整性检查
       # ============================================================
 
-      - name: Verify preview removed
+      - name: Verify preview removal
         run: |
+          echo "Checking preview leftovers..."
+
           result="$(
             grep -R \
               -n \
@@ -1658,7 +734,6 @@ jobs:
           if [ -n "$result" ]
           then
             echo "$result"
-            echo "ERROR: Preview leftovers remain."
             exit 1
           fi
 
@@ -1670,7 +745,7 @@ jobs:
             pkg.dependencies?.['hls.js']
           ) {
             throw new Error(
-              'hls.js still installed'
+              'hls.js still exists'
             )
           }
 
@@ -1678,7 +753,7 @@ jobs:
             pkg.dependencies?.['mpegts.js']
           ) {
             throw new Error(
-              'mpegts.js still installed'
+              'mpegts.js still exists'
             )
           }
 
@@ -1687,18 +762,54 @@ jobs:
           )
           NODE
 
-      - name: Verify recording and monitor functions
-        env:
-          EXPECTED_VERSION: ${{ inputs.version }}
+      # ============================================================
+      # 防止再误删正常 imports
+      # ============================================================
+
+      - name: Verify main imports intact
         run: |
-          grep -q \
-            "monitorOnly" \
-            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+          node - <<'NODE'
+          const fs = require('fs')
 
-          grep -q \
-            "autoRecord: boolean" \
-            type.d.ts
+          const text =
+            fs.readFileSync(
+              'src/main/index.ts',
+              'utf8'
+            )
 
+          const required = [
+            "from 'electron'",
+            'ipcMain',
+            'BrowserWindow',
+            'RETRY_DOWNLOAD_DEP',
+            'recordStreamFfmpegProcessMap',
+            'downloadReq',
+            'startFrpcProcess',
+            'START_STREAM_RECORD'
+          ]
+
+          for (
+            const token of required
+          ) {
+            if (
+              !text.includes(
+                token
+              )
+            ) {
+              throw new Error(
+                'Required main import/code missing: ' +
+                token
+              )
+            }
+          }
+
+          console.log(
+            'Main imports are intact.'
+          )
+          NODE
+
+      - name: Verify recording core retained
+        run: |
           grep -q \
             "getQualityRank" \
             src/main/crawler/plugins/douyin.js
@@ -1716,31 +827,11 @@ jobs:
             src/main/ffmpeg/record.ts
 
           grep -q \
-            "ipcMain.handle(START_STREAM_RECORD" \
-            src/main/index.ts
-
-          node -e "
-          const p =
-            require('./package.json');
-
-          if (
-            p.version !==
-            process.env.EXPECTED_VERSION
-          ) {
-            throw new Error(
-              'Version mismatch: ' +
-              p.version
-            );
-          }
-
-          console.log(
-            'Version:',
-            p.version
-          );
-          "
+            "autoRecord: boolean" \
+            type.d.ts
 
       # ============================================================
-      # TypeScript / Build
+      # 关键：编译检查
       # ============================================================
 
       - name: TypeScript check
@@ -1759,7 +850,7 @@ jobs:
             --x64 \
             --publish never
 
-      - name: Verify Windows installer
+      - name: Verify installer
         shell: pwsh
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -1767,26 +858,24 @@ jobs:
           $package = Get-Content package.json | ConvertFrom-Json
 
           if ($package.version -ne $env:EXPECTED_VERSION) {
-            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+            throw "Version mismatch"
           }
 
           $installers = Get-ChildItem -Path dist -Filter "*-x64.exe"
 
           if (-not $installers -or $installers.Count -eq 0) {
-            throw "Windows x64 installer not generated."
+            throw "Installer not generated"
           }
-
-          Write-Host "Generated installer:"
 
           $installers |
             Select-Object Name, Length, FullName |
             Format-Table -AutoSize
 
       # ============================================================
-      # 保存测试分支
+      # 成功后才提交
       # ============================================================
 
-      - name: Commit V2.7 source
+      - name: Commit stable V2.7
         run: |
           git config \
             user.name \
@@ -1798,20 +887,16 @@ jobs:
 
           git add -A
 
-          if git diff --cached --quiet
-          then
-            echo "No source changes."
-          else
-            git commit \
-              -m "Remove preview and optimize monitoring UI"
-          fi
+          git commit \
+            -m "Remove preview and stabilize V2.7 UI" \
+            || true
 
           git push \
             --force \
             origin \
             douyin-v2.7-ui-test
 
-      - name: Upload Windows installer
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: fideo-${{ inputs.version }}-douyin-v2.7-ui-windows-x64
@@ -1825,21 +910,14 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
         run: |
           {
-            echo "# Fideo V2.7 UI Cleanup"
+            echo "# Fideo V2.7 Stable"
             echo
             echo "Version: \`$APP_VERSION\`"
             echo
-            echo "Branch: \`douyin-v2.7-ui-test\`"
-            echo
-            echo "- Removed live preview completely"
-            echo "- Removed preview IPC"
-            echo "- Removed HLS / MPEGTS dependencies"
-            echo "- Optimized card layout"
-            echo "- Optimized monitoring / recording states"
-            echo "- Added complete status filters"
-            echo "- Improved settings layout"
-            echo "- Retained notify-only monitoring"
-            echo "- Retained Windows notifications"
-            echo "- Retained Xizhi notifications"
-            echo "- Retained Douyin recording quality selection"
+            echo "- Preview removed"
+            echo "- HLS / MPEGTS dependencies removed"
+            echo "- Original recording imports protected"
+            echo "- Recording quality logic retained"
+            echo "- Notify-only mode retained"
+            echo "- Basic layout spacing optimized"
           } >> "$GITHUB_STEP_SUMMARY"
