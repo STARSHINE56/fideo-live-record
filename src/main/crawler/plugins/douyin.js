@@ -27,14 +27,20 @@ const PC_USER_AGENT =
   'Chrome/123.0.0.0 Safari/537.36'
 
 function getCookieWithTtwid(cookie) {
-  if (
-    cookie &&
-    cookie.includes('ttwid=')
-  ) {
-    return cookie
+  if (!cookie) {
+    return ''
   }
 
-  return ''
+  const match =
+    String(cookie).match(
+      /(?:^|;\s*)ttwid=([^;]+)/
+    )
+
+  if (!match?.[1]) {
+    return ''
+  }
+
+  return `ttwid=${match[1]}`
 }
 
 function joinSetCookies(...responses) {
@@ -78,7 +84,8 @@ function buildWebParams(roomId) {
 
 async function getDesktopData(
   roomUrl,
-  others = {}
+  others = {},
+  signed = false
 ) {
   const {
     proxy,
@@ -146,19 +153,21 @@ async function getDesktopData(
   const params =
     buildWebParams(roomId)
 
-  const query =
-    params.toString()
+  if (signed) {
+    const query =
+      params.toString()
 
-  const aBogus =
-    generateABogus(
-      query,
-      PC_USER_AGENT
+    const aBogus =
+      generateABogus(
+        query,
+        PC_USER_AGENT
+      )
+
+    params.set(
+      'a_bogus',
+      aBogus
     )
-
-  params.set(
-    'a_bogus',
-    aBogus
-  )
+  }
 
   const apiUrl =
     `${baseUrl}webcast/room/web/enter/?${params.toString()}`
@@ -467,6 +476,264 @@ function getDesktopRoom(
   return room
 }
 
+
+async function resolveDouyinLiveUrl(
+  roomUrl,
+  others = {}
+) {
+  const {
+    proxy
+  } = others
+
+  let input
+
+  try {
+    input =
+      new URL(roomUrl)
+  } catch {
+    throw new Error(
+      'DOUYIN_INVALID_URL'
+    )
+  }
+
+  if (
+    input.hostname ===
+    'live.douyin.com'
+  ) {
+    const roomId =
+      input.pathname
+        .split('/')
+        .filter(Boolean)
+        .pop()
+
+    if (
+      roomId &&
+      /^\d+$/.test(roomId)
+    ) {
+      return (
+        'https://live.douyin.com/' +
+        roomId
+      )
+    }
+
+    throw new Error(
+      'DOUYIN_INVALID_ROOM_ID'
+    )
+  }
+
+  const allowedHosts = [
+    'v.douyin.com',
+    'www.douyin.com',
+    'douyin.com',
+    'webcast.amemv.com'
+  ]
+
+  if (
+    !allowedHosts.includes(
+      input.hostname
+    )
+  ) {
+    throw new Error(
+      'DOUYIN_UNSUPPORTED_URL'
+    )
+  }
+
+  const response =
+    await request(
+      roomUrl,
+      {
+        headers: {
+          'User-Agent':
+            PC_USER_AGENT
+        },
+        proxy
+      }
+    )
+
+  const finalUrl =
+    response
+      ?.request
+      ?.res
+      ?.responseUrl ||
+    roomUrl
+
+  try {
+    const finalParsed =
+      new URL(finalUrl)
+
+    if (
+      finalParsed.hostname ===
+      'live.douyin.com'
+    ) {
+      const roomId =
+        finalParsed.pathname
+          .split('/')
+          .filter(Boolean)
+          .pop()
+
+      if (
+        roomId &&
+        /^\d+$/.test(roomId)
+      ) {
+        return (
+          'https://live.douyin.com/' +
+          roomId
+        )
+      }
+    }
+  } catch {
+    // Continue to HTML parsing.
+  }
+
+  const html =
+    typeof response.data ===
+      'string'
+      ? response.data
+      : JSON.stringify(
+          response.data || {}
+        )
+
+  const patterns = [
+    /webRid[^0-9]{0,80}(\d{5,})/,
+    /web_rid[^0-9]{0,80}(\d{5,})/,
+    /"web_rid"\s*:\s*"(\d{5,})"/,
+    /"webRid"\s*:\s*"(\d{5,})"/
+  ]
+
+  for (
+    const pattern of patterns
+  ) {
+    const match =
+      html.match(pattern)
+
+    if (match?.[1]) {
+      return (
+        'https://live.douyin.com/' +
+        match[1]
+      )
+    }
+  }
+
+  throw new Error(
+    'DOUYIN_RESOLVE_ROOM_FAILED'
+  )
+}
+
+
+async function getDesktopRoomWithFallback(
+  roomUrl,
+  others = {}
+) {
+  let unsignedError = null
+
+  try {
+    const data =
+      await getDesktopData(
+        roomUrl,
+        others,
+        false
+      )
+
+    const room =
+      getDesktopRoom(data)
+
+    if (
+      room.status !== 2
+    ) {
+      return room
+    }
+
+    const urls =
+      collectDesktopStreams(
+        room
+      )
+
+    if (
+      urls.length > 0
+    ) {
+      log(
+        'Douyin unsigned parser success'
+      )
+
+      return room
+    }
+
+    unsignedError =
+      new Error(
+        'DOUYIN_UNSIGNED_STREAM_EMPTY'
+      )
+  } catch (error) {
+    unsignedError =
+      error
+
+    log(
+      'Douyin unsigned parser failed:',
+      error?.message
+    )
+  }
+
+  try {
+    const data =
+      await getDesktopData(
+        roomUrl,
+        others,
+        true
+      )
+
+    const room =
+      getDesktopRoom(data)
+
+    if (
+      room.status !== 2
+    ) {
+      return room
+    }
+
+    const urls =
+      collectDesktopStreams(
+        room
+      )
+
+    if (
+      urls.length === 0
+    ) {
+      throw new Error(
+        'DOUYIN_SIGNED_STREAM_EMPTY'
+      )
+    }
+
+    log(
+      'Douyin A-Bogus parser success'
+    )
+
+    return room
+  } catch (signedError) {
+    log(
+      'Douyin A-Bogus parser failed:',
+      signedError?.message
+    )
+
+    throw new Error(
+      'DOUYIN_WEB_PARSE_FAILED: ' +
+      'unsigned=' +
+      String(
+        unsignedError
+          ?.message ||
+        unsignedError ||
+        'unknown'
+      ) +
+      '; signed=' +
+      String(
+        signedError
+          ?.message ||
+        signedError ||
+        'unknown'
+      )
+    )
+  }
+}
+
+
 async function baseGetDesktopDouYinLiveUrlsPlugin(
   roomUrl,
   others = {}
@@ -481,14 +748,11 @@ async function baseGetDesktopDouYinLiveUrlsPlugin(
     roomId
   )
 
-  const data =
-    await getDesktopData(
+  const room =
+    await getDesktopRoomWithFallback(
       roomUrl,
       others
     )
-
-  const room =
-    getDesktopRoom(data)
 
   if (
     room.status !== 2
@@ -574,84 +838,32 @@ async function baseGetDouYinLiveUrlsPlugin(
   roomUrl,
   others = {}
 ) {
-  const host =
-    new URL(roomUrl).host
+  const normalizedUrl =
+    await resolveDouyinLiveUrl(
+      roomUrl,
+      others
+    )
 
-  if (
-    host ===
-    'live.douyin.com'
-  ) {
-    try {
-      return await baseGetDesktopDouYinLiveUrlsPlugin(
-        roomUrl,
-        others
-      )
-    } catch (error) {
-      log(
-        'desktop parser failed:',
-        error?.message
-      )
-
-      if (
-        error?.message?.includes(
-          '403'
-        ) ||
-        error?.message?.includes(
-          'DOUYIN_RISK_CONTROL'
-        )
-      ) {
-        throw error
-      }
-
-      return await baseGetMobileDouYinLiveUrlsPlugin(
-        roomUrl,
-        others
-      )
-    }
-  }
-
-  return await baseGetMobileDouYinLiveUrlsPlugin(
-    roomUrl,
+  return await baseGetDesktopDouYinLiveUrlsPlugin(
+    normalizedUrl,
     others
   )
 }
+
 
 async function baseGetDouYinRoomInfoPlugin(
   roomUrl,
   others = {}
 ) {
-  const host =
-    new URL(roomUrl).host
-
-  if (
-    host ===
-    'live.douyin.com'
-  ) {
-    const data =
-      await getDesktopData(
-        roomUrl,
-        others
-      )
-
-    const room =
-      getDesktopRoom(
-        data
-      )
-
-    return {
-      code: SUCCESS_CODE,
-      roomInfo: {
-        name:
-          room
-            ?.owner
-            ?.nickname || ''
-      }
-    }
-  }
-
-  const data =
-    await getMobileData(
+  const normalizedUrl =
+    await resolveDouyinLiveUrl(
       roomUrl,
+      others
+    )
+
+  const room =
+    await getDesktopRoomWithFallback(
+      normalizedUrl,
       others
     )
 
@@ -659,14 +871,13 @@ async function baseGetDouYinRoomInfoPlugin(
     code: SUCCESS_CODE,
     roomInfo: {
       name:
-        data
-          ?.data
-          ?.room
+        room
           ?.owner
           ?.nickname || ''
     }
   }
 }
+
 
 export const getDouYinLiveUrlsPlugin =
   captureError(

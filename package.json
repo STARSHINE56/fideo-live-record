@@ -1,10 +1,10 @@
 {
   "name": "fideo",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "this is a easy live record app",
   "main": "./out/main/index.js",
   "author": "chenfan",
-  "homepage": "https://github.com/chenfan0/fideo-live-record",
+  "homepage": "https://github.com/STARSHINE56/fideo-live-record",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint . --ext .js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
@@ -95,5 +95,9 @@
     "terser": "^5.36.0",
     "typescript": "^5.3.3",
     "vite": "^5.0.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/STARSHINE56/fideo-live-record.git"
   }
 }

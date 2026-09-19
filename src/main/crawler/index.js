@@ -244,7 +244,7 @@ export async function getLiveUrls(info, writeLog) {
   }
 
   const res = await getLiveUrlsFn(roomUrl, { proxy, cookie }, writeLog)
-  log('res:', res)
+  log('crawler request completed, code:', res?.code)
   return res
 }
 
@@ -270,6 +270,6 @@ export async function getRoomInfo(info, writeLog) {
   }
 
   const res = await getRoomInfoFn(roomUrl, { proxy, cookie }, writeLog)
-  log('res:', res)
+  log('crawler request completed, code:', res?.code)
   return res
 }
