@@ -65,6 +65,16 @@ const hostnameToPlatformCrawlerFnMap = {
     getRoomInfoFn: getDouYinRoomInfoPlugin
   },
 
+  'www.douyin.com': {
+    getLiveUrlsFn: getDouYinLiveUrlsPlugin,
+    getRoomInfoFn: getDouYinRoomInfoPlugin
+  },
+
+  'douyin.com': {
+    getLiveUrlsFn: getDouYinLiveUrlsPlugin,
+    getRoomInfoFn: getDouYinRoomInfoPlugin
+  },
+
   'live.kuaishou.com': {
     getLiveUrlsFn: getKuaishouLiveUrlsPlugin,
     getRoomInfoFn: getKuaishouRoomInfoPlugin

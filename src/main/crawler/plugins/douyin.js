@@ -1128,6 +1128,563 @@ async function resolveDouyinLiveUrl(
 }
 
 
+
+function getDouyinProfileSecUid(
+  inputUrl
+) {
+  try {
+    const url =
+      new URL(
+        inputUrl
+      )
+
+    const host =
+      url.hostname
+        .toLowerCase()
+
+    if (
+      host !== 'www.douyin.com' &&
+      host !== 'douyin.com'
+    ) {
+      return ''
+    }
+
+    const parts =
+      url.pathname
+        .split('/')
+        .filter(Boolean)
+
+    if (
+      parts[0] !== 'user' ||
+      !parts[1]
+    ) {
+      return ''
+    }
+
+    return decodeURIComponent(
+      parts[1]
+    )
+  } catch {
+    return ''
+  }
+}
+
+
+function parseDouyinJson(
+  value
+) {
+  if (!value) {
+    return null
+  }
+
+  if (
+    typeof value ===
+    'object'
+  ) {
+    return value
+  }
+
+  if (
+    typeof value !==
+    'string'
+  ) {
+    return null
+  }
+
+  try {
+    return JSON.parse(
+      value
+    )
+  } catch {
+    return null
+  }
+}
+
+
+function findDouyinNestedValue(
+  value,
+  keys,
+  depth = 0
+) {
+  if (
+    !value ||
+    typeof value !==
+      'object' ||
+    depth > 8
+  ) {
+    return undefined
+  }
+
+  for (
+    const key of keys
+  ) {
+    const result =
+      value[key]
+
+    if (
+      result !== undefined &&
+      result !== null &&
+      result !== ''
+    ) {
+      return result
+    }
+  }
+
+  for (
+    const child of
+    Object.values(
+      value
+    )
+  ) {
+    if (
+      !child ||
+      typeof child !==
+        'object'
+    ) {
+      continue
+    }
+
+    const found =
+      findDouyinNestedValue(
+        child,
+        keys,
+        depth + 1
+      )
+
+    if (
+      found !== undefined
+    ) {
+      return found
+    }
+  }
+
+  return undefined
+}
+
+
+function buildDouyinProfileParams(
+  secUid
+) {
+  return new URLSearchParams({
+    device_platform:
+      'webapp',
+
+    aid:
+      '6383',
+
+    channel:
+      'channel_pc_web',
+
+    pc_client_type:
+      '1',
+
+    version_code:
+      '190500',
+
+    version_name:
+      '19.5.0',
+
+    cookie_enabled:
+      'true',
+
+    screen_width:
+      '1920',
+
+    screen_height:
+      '1080',
+
+    browser_language:
+      'zh-CN',
+
+    browser_platform:
+      'Win32',
+
+    browser_name:
+      'Chrome',
+
+    browser_version:
+      '123.0.0.0',
+
+    browser_online:
+      'true',
+
+    engine_name:
+      'Blink',
+
+    engine_version:
+      '123.0.0.0',
+
+    os_name:
+      'Windows',
+
+    os_version:
+      '10',
+
+    cpu_core_num:
+      '8',
+
+    device_memory:
+      '8',
+
+    platform:
+      'PC',
+
+    downlink:
+      '10',
+
+    effective_type:
+      '4g',
+
+    round_trip_time:
+      '50',
+
+    sec_user_id:
+      secUid,
+
+    msToken:
+      ''
+  })
+}
+
+
+async function getDouyinAnchorProfile(
+  secUid,
+  others = {}
+) {
+  const {
+    proxy,
+    cookie
+  } =
+    others
+
+  if (!secUid) {
+    throw new Error(
+      'DOUYIN_SEC_UID_EMPTY'
+    )
+  }
+
+  const profileUrl =
+    'https://www.douyin.com/user/' +
+    encodeURIComponent(
+      secUid
+    )
+
+  const headers = {
+    Referer:
+      profileUrl,
+
+    'User-Agent':
+      PC_USER_AGENT
+  }
+
+  let generatedCookies =
+    ''
+
+  try {
+    const bootstrap =
+      await request(
+        'https://www.douyin.com/',
+        {
+          headers,
+          proxy
+        }
+      )
+
+    generatedCookies =
+      joinSetCookies(
+        bootstrap
+      )
+  } catch {
+  }
+
+  const finalCookie = [
+    generatedCookies,
+    cookie
+  ]
+    .filter(Boolean)
+    .join('; ')
+
+  const params =
+    buildDouyinProfileParams(
+      secUid
+    )
+
+  const query =
+    params.toString()
+
+  const aBogus =
+    generateABogus(
+      query,
+      PC_USER_AGENT
+    )
+
+  params.set(
+    'a_bogus',
+    aBogus
+  )
+
+  const apiUrl =
+    'https://www.douyin.com' +
+    '/aweme/v1/web/user/profile/other/?' +
+    params.toString()
+
+  const response =
+    await request(
+      apiUrl,
+      {
+        headers: {
+          ...headers,
+
+          ...(finalCookie
+            ? {
+                cookie:
+                  finalCookie
+              }
+            : {})
+        },
+
+        proxy
+      }
+    )
+
+  const body =
+    response?.data
+
+  if (!body) {
+    throw new Error(
+      'DOUYIN_PROFILE_RESPONSE_EMPTY'
+    )
+  }
+
+  const user =
+    body?.user ||
+    body?.data?.user ||
+    body?.user_info ||
+    body?.data?.user_info ||
+    body?.data ||
+    {}
+
+  const roomData =
+    parseDouyinJson(
+      user?.room_data
+    ) ||
+    parseDouyinJson(
+      body?.room_data
+    ) ||
+    parseDouyinJson(
+      body?.data?.room_data
+    ) ||
+    {}
+
+  const nickname =
+    user?.nickname ||
+    findDouyinNestedValue(
+      user,
+      [
+        'nickname',
+        'nick_name'
+      ]
+    ) ||
+    ''
+
+  const liveStatus =
+    Number(
+      user?.live_status ??
+      user?.liveStatus ??
+      findDouyinNestedValue(
+        user,
+        [
+          'live_status',
+          'liveStatus'
+        ]
+      ) ??
+      0
+    )
+
+  const roomStatus =
+    Number(
+      roomData?.status ??
+      roomData?.room?.status ??
+      findDouyinNestedValue(
+        roomData,
+        [
+          'status'
+        ]
+      ) ??
+      0
+    )
+
+  const rawWebRid =
+    findDouyinNestedValue(
+      roomData,
+      [
+        'web_rid',
+        'webRid'
+      ]
+    ) ??
+    findDouyinNestedValue(
+      user,
+      [
+        'web_rid',
+        'webRid'
+      ]
+    )
+
+  const webRid =
+    rawWebRid
+      ? String(
+          rawWebRid
+        )
+      : ''
+
+  const live =
+    liveStatus === 1 ||
+    liveStatus === 2 ||
+    roomStatus === 2
+
+  log(
+    'Douyin anchor status:',
+    {
+      nickname,
+      live,
+      hasWebRid:
+        Boolean(
+          webRid
+        )
+    }
+  )
+
+  return {
+    nickname,
+    live,
+    webRid,
+    secUid
+  }
+}
+
+
+async function resolveDouyinTarget(
+  inputUrl,
+  others = {}
+) {
+  let currentUrl =
+    inputUrl
+
+  let parsed
+
+  try {
+    parsed =
+      new URL(
+        currentUrl
+      )
+  } catch {
+    throw new Error(
+      'DOUYIN_INVALID_URL'
+    )
+  }
+
+  if (
+    parsed.hostname ===
+    'v.douyin.com'
+  ) {
+    const response =
+      await request(
+        currentUrl,
+        {
+          headers: {
+            'User-Agent':
+              PC_USER_AGENT
+          },
+
+          proxy:
+            others.proxy
+        }
+      )
+
+    currentUrl =
+      response
+        ?.request
+        ?.res
+        ?.responseUrl ||
+      currentUrl
+
+    parsed =
+      new URL(
+        currentUrl
+      )
+  }
+
+  const secUid =
+    getDouyinProfileSecUid(
+      currentUrl
+    )
+
+  if (secUid) {
+    return {
+      type:
+        'anchor',
+
+      secUid,
+
+      sourceUrl:
+        currentUrl
+    }
+  }
+
+  const liveRoomUrl =
+    await resolveDouyinLiveUrl(
+      currentUrl,
+      others
+    )
+
+  return {
+    type:
+      'room',
+
+    roomUrl:
+      liveRoomUrl,
+
+    sourceUrl:
+      currentUrl
+  }
+}
+
+
+async function resolveDouyinAnchorLiveRoom(
+  secUid,
+  others = {}
+) {
+  const profile =
+    await getDouyinAnchorProfile(
+      secUid,
+      others
+    )
+
+  if (
+    !profile.live ||
+    !profile.webRid
+  ) {
+    return {
+      code:
+        CRAWLER_ERROR_CODE.NOT_URLS,
+
+      profile
+    }
+  }
+
+  return {
+    code:
+      SUCCESS_CODE,
+
+    profile,
+
+    roomUrl:
+      'https://live.douyin.com/' +
+      profile.webRid
+  }
+}
+
+
 async function getDesktopRoomWithFallback(
   roomUrl,
   others = {}
@@ -1342,46 +1899,99 @@ async function baseGetMobileDouYinLiveUrlsPlugin(
   }
 }
 
+
 async function baseGetDouYinLiveUrlsPlugin(
   roomUrl,
   others = {}
 ) {
-  const normalizedUrl =
-    await resolveDouyinLiveUrl(
+  const target =
+    await resolveDouyinTarget(
       roomUrl,
       others
     )
 
+  if (
+    target.type ===
+    'anchor'
+  ) {
+    const anchor =
+      await resolveDouyinAnchorLiveRoom(
+        target.secUid,
+        others
+      )
+
+    if (
+      anchor.code !==
+      SUCCESS_CODE
+    ) {
+      return {
+        code:
+          CRAWLER_ERROR_CODE.NOT_URLS
+      }
+    }
+
+    return await baseGetDesktopDouYinLiveUrlsPlugin(
+      anchor.roomUrl,
+      others
+    )
+  }
+
   return await baseGetDesktopDouYinLiveUrlsPlugin(
-    normalizedUrl,
+    target.roomUrl,
     others
   )
 }
+
 
 
 async function baseGetDouYinRoomInfoPlugin(
   roomUrl,
   others = {}
 ) {
-  const normalizedUrl =
-    await resolveDouyinLiveUrl(
+  const target =
+    await resolveDouyinTarget(
       roomUrl,
       others
     )
 
+  if (
+    target.type ===
+    'anchor'
+  ) {
+    const profile =
+      await getDouyinAnchorProfile(
+        target.secUid,
+        others
+      )
+
+    return {
+      code:
+        SUCCESS_CODE,
+
+      roomInfo: {
+        name:
+          profile.nickname ||
+          ''
+      }
+    }
+  }
+
   const room =
     await getDesktopRoomWithFallback(
-      normalizedUrl,
+      target.roomUrl,
       others
     )
 
   return {
-    code: SUCCESS_CODE,
+    code:
+      SUCCESS_CODE,
+
     roomInfo: {
       name:
         room
           ?.owner
-          ?.nickname || ''
+          ?.nickname ||
+        ''
     }
   }
 }
