@@ -52,11 +52,24 @@ export default function StreamPreviewDialog(
 
     setError(false)
 
+    const handleVideoError = () => {
+      setError(true)
+    }
+
+    video.addEventListener(
+      'error',
+      handleVideoError
+    )
+
     let hls:
       | Hls
       | null = null
 
     const cleanup = () => {
+      video.removeEventListener(
+        'error',
+        handleVideoError
+      )
       if (hls) {
         try {
           hls.destroy()
@@ -118,8 +131,7 @@ export default function StreamPreviewDialog(
         liveMaxLatencyDurationCount:
           5,
 
-        enableWorker:
-          true
+        enableWorker: false
       })
 
     hls.loadSource(
