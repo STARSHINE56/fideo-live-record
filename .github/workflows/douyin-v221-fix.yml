@@ -1,4 +1,4 @@
-name: Douyin V2.2.1 Fix And Build
+name: Douyin V2.2.1 All In One
 
 on:
   workflow_dispatch:
@@ -13,248 +13,1014 @@ permissions:
   contents: write
 
 jobs:
-  fix-build:
-    name: Repair V2.2 Patch And Build
+  build:
+    name: Fix Douyin Update Version And Build
     runs-on: windows-latest
     timeout-minutes: 45
 
     steps:
-      - name: Checkout main
+      # ============================================================
+      # 1. 从已经成功构建过的 V2.1 测试分支开始
+      # ============================================================
+
+      - name: Checkout Douyin V2.1 source
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: douyin-parser-v2-test
           fetch-depth: 0
+
+      - name: Create V2.2 test branch
+        shell: bash
+        run: |
+          git switch -C douyin-v2.2-test
+
+      # ============================================================
+      # 2. Python
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Extract and repair V2.2 Python patch
+      # ============================================================
+      # 3. 一次性修改源码
+      # ============================================================
+
+      - name: Apply V2.2.1 source fixes
         shell: bash
+        env:
+          APP_VERSION: ${{ inputs.version }}
         run: |
-          python - <<'PY'
+          cat > "$RUNNER_TEMP/apply_v221.py" <<'PY'
           from pathlib import Path
-          import ast
+          import json
           import os
           import re
-          import textwrap
 
-          workflow = Path(
-              ".github/workflows/douyin-v22-all-in-one.yml"
-          )
 
-          if not workflow.exists():
-              raise RuntimeError(
-                  "找不到 douyin-v22-all-in-one.yml"
+          def read(path: str) -> str:
+              return Path(path).read_text(
+                  encoding="utf-8"
               )
 
-          content = workflow.read_text(
-              encoding="utf-8"
-          )
 
-          lines = content.splitlines()
-
-          start = None
-          end = None
-
-          for index, line in enumerate(lines):
-              if "python - <<'PY'" in line:
-                  start = index + 1
-                  break
-
-          if start is None:
-              raise RuntimeError(
-                  "找不到 V2.2 Python 补丁开始位置"
+          def write(path: str, content: str):
+              Path(path).write_text(
+                  content,
+                  encoding="utf-8"
               )
 
-          for index in range(start, len(lines)):
-              if lines[index].strip() == "PY":
-                  end = index
-                  break
 
-          if end is None:
+          version = os.environ[
+              "APP_VERSION"
+          ].strip()
+
+          if not re.fullmatch(
+              r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?",
+              version
+          ):
               raise RuntimeError(
-                  "找不到 V2.2 Python 补丁结束位置"
+                  f"Invalid version: {version}"
               )
 
-          script = "\n".join(
-              lines[start:end]
+
+          # ========================================================
+          # A. 修复抖音解析器
+          # ========================================================
+
+          douyin_path = (
+              "src/main/crawler/plugins/douyin.js"
           )
 
-          script = textwrap.dedent(
-              script
+          douyin = read(
+              douyin_path
           )
 
-          # ============================================================
-          # Repair invalid Python line-break assignments
-          # ============================================================
 
-          replacements = {
-              r'(?m)^crawler_path\s*=\s*\n\s*"src/main/crawler/index\.js"':
-                  'crawler_path = "src/main/crawler/index.js"',
+          # --------------------------------------------------------
+          # A1. 登录 Cookie 只取 ttwid
+          # 避免把完整登录 Cookie 发到直播解析接口
+          # --------------------------------------------------------
 
-              r'(?m)^crawler\s*=\s*\n\s*read\(crawler_path\)':
-                  'crawler = read(crawler_path)',
+          old_cookie_fn = """function getCookieWithTtwid(cookie) {
+            if (
+              cookie &&
+              cookie.includes('ttwid=')
+            ) {
+              return cookie
+            }
 
-              r'(?m)^main_path\s*=\s*\n\s*"src/main/index\.ts"':
-                  'main_path = "src/main/index.ts"',
+            return ''
+          }"""
 
-              r'(?m)^main\s*=\s*\n\s*read\(main_path\)':
-                  'main = read(main_path)',
+          new_cookie_fn = """function getCookieWithTtwid(cookie) {
+            if (!cookie) {
+              return ''
+            }
 
-              r'(?m)^app_path\s*=\s*\n\s*"src/renderer/src/App\.tsx"':
-                  'app_path = "src/renderer/src/App.tsx"',
+            const match =
+              String(cookie).match(
+                /(?:^|;\\\\s*)ttwid=([^;]+)/
+              )
 
-              r'(?m)^app\s*=\s*\n\s*read\(app_path\)':
-                  'app = read(app_path)',
+            if (!match?.[1]) {
+              return ''
+            }
 
-              r'(?m)^version\s*=\s*\n\s*os\.environ\["APP_VERSION"\]\.strip\(\)':
-                  'version = os.environ["APP_VERSION"].strip()',
+            return `ttwid=${match[1]}`
+          }"""
 
-              r'(?m)^semver_pattern\s*=\s*\n\s*r"([^"]+)"':
-                  r'semver_pattern = r"\1"',
+          if old_cookie_fn in douyin:
+              douyin = douyin.replace(
+                  old_cookie_fn,
+                  new_cookie_fn,
+                  1
+              )
+          elif (
+              "function getCookieWithTtwid(cookie)"
+              not in douyin
+          ):
+              raise RuntimeError(
+                  "getCookieWithTtwid not found"
+              )
 
-              r'(?m)^package_path\s*=\s*\n\s*Path\("package\.json"\)':
-                  'package_path = Path("package.json")',
 
-              r'(?m)^lock_path\s*=\s*\n\s*Path\("package-lock\.json"\)':
-                  'lock_path = Path("package-lock.json")',
+          # --------------------------------------------------------
+          # A2. getDesktopData 增加 signed 参数
+          # --------------------------------------------------------
 
-              r'(?m)^builder_path\s*=\s*\n\s*"electron-builder\.yml"':
-                  'builder_path = "electron-builder.yml"',
+          old_signature = """async function getDesktopData(
+            roomUrl,
+            others = {}
+          ) {"""
 
-              r'(?m)^builder\s*=\s*\n\s*read\(builder_path\)':
-                  'builder = read(builder_path)',
+          new_signature = """async function getDesktopData(
+            roomUrl,
+            others = {},
+            signed = false
+          ) {"""
 
-              r'(?m)^data\s*=\s*\n\s*read\(file\)':
-                  'data = read(file)'
+          if old_signature in douyin:
+              douyin = douyin.replace(
+                  old_signature,
+                  new_signature,
+                  1
+              )
+          elif new_signature not in douyin:
+              raise RuntimeError(
+                  "getDesktopData signature not found"
+              )
+
+
+          # --------------------------------------------------------
+          # A3. A-Bogus 改为按需使用
+          # --------------------------------------------------------
+
+          old_sign_block = """  const query =
+              params.toString()
+
+            const aBogus =
+              generateABogus(
+                query,
+                PC_USER_AGENT
+              )
+
+            params.set(
+              'a_bogus',
+              aBogus
+            )
+
+            const apiUrl ="""
+
+          new_sign_block = """  if (signed) {
+              const query =
+                params.toString()
+
+              const aBogus =
+                generateABogus(
+                  query,
+                  PC_USER_AGENT
+                )
+
+              params.set(
+                'a_bogus',
+                aBogus
+              )
+            }
+
+            const apiUrl ="""
+
+          if old_sign_block in douyin:
+              douyin = douyin.replace(
+                  old_sign_block,
+                  new_sign_block,
+                  1
+              )
+          elif (
+              "if (signed) {"
+              not in douyin
+          ):
+              raise RuntimeError(
+                  "A-Bogus block not found"
+              )
+
+
+          # --------------------------------------------------------
+          # A4. 加入短链解析 + 双 Web API 兜底
+          # --------------------------------------------------------
+
+          desktop_marker = (
+              "async function "
+              "baseGetDesktopDouYinLiveUrlsPlugin("
+          )
+
+          desktop_pos = douyin.find(
+              desktop_marker
+          )
+
+          if desktop_pos == -1:
+              raise RuntimeError(
+                  "Desktop parser marker not found"
+              )
+
+          helpers = r"""
+          async function resolveDouyinLiveUrl(
+            roomUrl,
+            others = {}
+          ) {
+            const {
+              proxy
+            } = others
+
+            let input
+
+            try {
+              input =
+                new URL(roomUrl)
+            } catch {
+              throw new Error(
+                'DOUYIN_INVALID_URL'
+              )
+            }
+
+            if (
+              input.hostname ===
+              'live.douyin.com'
+            ) {
+              const roomId =
+                input.pathname
+                  .split('/')
+                  .filter(Boolean)
+                  .pop()
+
+              if (
+                roomId &&
+                /^\d+$/.test(roomId)
+              ) {
+                return (
+                  'https://live.douyin.com/' +
+                  roomId
+                )
+              }
+
+              throw new Error(
+                'DOUYIN_INVALID_ROOM_ID'
+              )
+            }
+
+            const allowedHosts = [
+              'v.douyin.com',
+              'www.douyin.com',
+              'douyin.com',
+              'webcast.amemv.com'
+            ]
+
+            if (
+              !allowedHosts.includes(
+                input.hostname
+              )
+            ) {
+              throw new Error(
+                'DOUYIN_UNSUPPORTED_URL'
+              )
+            }
+
+            const response =
+              await request(
+                roomUrl,
+                {
+                  headers: {
+                    'User-Agent':
+                      PC_USER_AGENT
+                  },
+                  proxy
+                }
+              )
+
+            const finalUrl =
+              response
+                ?.request
+                ?.res
+                ?.responseUrl ||
+              roomUrl
+
+            try {
+              const finalParsed =
+                new URL(finalUrl)
+
+              if (
+                finalParsed.hostname ===
+                'live.douyin.com'
+              ) {
+                const roomId =
+                  finalParsed.pathname
+                    .split('/')
+                    .filter(Boolean)
+                    .pop()
+
+                if (
+                  roomId &&
+                  /^\d+$/.test(roomId)
+                ) {
+                  return (
+                    'https://live.douyin.com/' +
+                    roomId
+                  )
+                }
+              }
+            } catch {
+              // Continue to HTML parsing.
+            }
+
+            const html =
+              typeof response.data ===
+                'string'
+                ? response.data
+                : JSON.stringify(
+                    response.data || {}
+                  )
+
+            const patterns = [
+              /webRid[^0-9]{0,80}(\d{5,})/,
+              /web_rid[^0-9]{0,80}(\d{5,})/,
+              /"web_rid"\s*:\s*"(\d{5,})"/,
+              /"webRid"\s*:\s*"(\d{5,})"/
+            ]
+
+            for (
+              const pattern of patterns
+            ) {
+              const match =
+                html.match(pattern)
+
+              if (match?.[1]) {
+                return (
+                  'https://live.douyin.com/' +
+                  match[1]
+                )
+              }
+            }
+
+            throw new Error(
+              'DOUYIN_RESOLVE_ROOM_FAILED'
+            )
           }
 
-          for pattern, replacement in replacements.items():
-              script = re.sub(
-                  pattern,
-                  replacement,
-                  script
+
+          async function getDesktopRoomWithFallback(
+            roomUrl,
+            others = {}
+          ) {
+            let unsignedError = null
+
+            try {
+              const data =
+                await getDesktopData(
+                  roomUrl,
+                  others,
+                  false
+                )
+
+              const room =
+                getDesktopRoom(data)
+
+              if (
+                room.status !== 2
+              ) {
+                return room
+              }
+
+              const urls =
+                collectDesktopStreams(
+                  room
+                )
+
+              if (
+                urls.length > 0
+              ) {
+                log(
+                  'Douyin unsigned parser success'
+                )
+
+                return room
+              }
+
+              unsignedError =
+                new Error(
+                  'DOUYIN_UNSIGNED_STREAM_EMPTY'
+                )
+            } catch (error) {
+              unsignedError =
+                error
+
+              log(
+                'Douyin unsigned parser failed:',
+                error?.message
+              )
+            }
+
+            try {
+              const data =
+                await getDesktopData(
+                  roomUrl,
+                  others,
+                  true
+                )
+
+              const room =
+                getDesktopRoom(data)
+
+              if (
+                room.status !== 2
+              ) {
+                return room
+              }
+
+              const urls =
+                collectDesktopStreams(
+                  room
+                )
+
+              if (
+                urls.length === 0
+              ) {
+                throw new Error(
+                  'DOUYIN_SIGNED_STREAM_EMPTY'
+                )
+              }
+
+              log(
+                'Douyin A-Bogus parser success'
               )
 
-          # ============================================================
-          # Repair multiline json.loads assignments
-          # ============================================================
-
-          script = re.sub(
-              r'''(?ms)^package\s*=\s*\n\s*json\.loads\(\s*package_path\.read_text\(\s*encoding="utf-8"\s*\)\s*\)''',
-              'package = json.loads(package_path.read_text(encoding="utf-8"))',
-              script
-          )
-
-          script = re.sub(
-              r'''(?ms)^lock\s*=\s*\n\s*json\.loads\(\s*lock_path\.read_text\(\s*encoding="utf-8"\s*\)\s*\)''',
-              'lock = json.loads(lock_path.read_text(encoding="utf-8"))',
-              script
-          )
-
-          # ============================================================
-          # Final generic repair for simple assignments
-          # ============================================================
-
-          script = re.sub(
-              r'''(?m)^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\n\s*([A-Za-z_][A-Za-z0-9_]*\([^()\n]*\))$''',
-              r'\1 = \2',
-              script
-          )
-
-          # ============================================================
-          # Syntax validation
-          # ============================================================
-
-          try:
-              ast.parse(script)
-          except SyntaxError as error:
-              print("")
-              print("Python syntax validation failed")
-              print(
-                  f"Line {error.lineno}: {error.msg}"
+              return room
+            } catch (signedError) {
+              log(
+                'Douyin A-Bogus parser failed:',
+                signedError?.message
               )
 
-              source_lines = script.splitlines()
-
-              if error.lineno:
-                  first = max(
-                      0,
-                      error.lineno - 5
-                  )
-
-                  last = min(
-                      len(source_lines),
-                      error.lineno + 4
-                  )
-
-                  print("")
-                  print("Nearby source:")
-
-                  for number in range(
-                      first,
-                      last
-                  ):
-                      print(
-                          f"{number + 1}: "
-                          f"{source_lines[number]}"
-                      )
-
-              raise
-
-          temp_path = (
-              Path(
-                  os.environ["RUNNER_TEMP"]
+              throw new Error(
+                'DOUYIN_WEB_PARSE_FAILED: ' +
+                'unsigned=' +
+                String(
+                  unsignedError
+                    ?.message ||
+                  unsignedError ||
+                  'unknown'
+                ) +
+                '; signed=' +
+                String(
+                  signedError
+                    ?.message ||
+                  signedError ||
+                  'unknown'
+                )
               )
-              /
-              "douyin_v22_fixed.py"
+            }
+          }
+
+
+          """
+
+          if (
+              "async function resolveDouyinLiveUrl("
+              not in douyin
+          ):
+              douyin = (
+                  douyin[:desktop_pos] +
+                  helpers +
+                  douyin[desktop_pos:]
+              )
+
+
+          # --------------------------------------------------------
+          # A5. Desktop 解析函数改成双 Web API
+          # --------------------------------------------------------
+
+          old_desktop_logic = """  const data =
+              await getDesktopData(
+                roomUrl,
+                others
+              )
+
+            const room =
+              getDesktopRoom(data)
+
+            if (
+              room.status !== 2
+            ) {"""
+
+          new_desktop_logic = """  const room =
+              await getDesktopRoomWithFallback(
+                roomUrl,
+                others
+              )
+
+            if (
+              room.status !== 2
+            ) {"""
+
+          if old_desktop_logic in douyin:
+              douyin = douyin.replace(
+                  old_desktop_logic,
+                  new_desktop_logic,
+                  1
+              )
+
+
+          # --------------------------------------------------------
+          # A6. 替换直播 URL 总路由
+          # live / v.douyin 都统一解析成 live.douyin.com
+          # 不再错误进入 Mobile fallback
+          # --------------------------------------------------------
+
+          router_start = douyin.find(
+              "async function "
+              "baseGetDouYinLiveUrlsPlugin("
           )
 
-          temp_path.write_text(
-              script,
+          router_end = douyin.find(
+              "async function "
+              "baseGetDouYinRoomInfoPlugin(",
+              router_start
+          )
+
+          if (
+              router_start == -1
+              or router_end == -1
+          ):
+              raise RuntimeError(
+                  "Douyin live router not found"
+              )
+
+          live_router = r"""async function baseGetDouYinLiveUrlsPlugin(
+            roomUrl,
+            others = {}
+          ) {
+            const normalizedUrl =
+              await resolveDouyinLiveUrl(
+                roomUrl,
+                others
+              )
+
+            return await baseGetDesktopDouYinLiveUrlsPlugin(
+              normalizedUrl,
+              others
+            )
+          }
+
+
+          """
+
+          douyin = (
+              douyin[:router_start] +
+              live_router +
+              douyin[router_end:]
+          )
+
+
+          # --------------------------------------------------------
+          # A7. 房间信息也统一走 Web API
+          # --------------------------------------------------------
+
+          info_start = douyin.find(
+              "async function "
+              "baseGetDouYinRoomInfoPlugin("
+          )
+
+          info_end = douyin.find(
+              "export const "
+              "getDouYinLiveUrlsPlugin",
+              info_start
+          )
+
+          if (
+              info_start == -1
+              or info_end == -1
+          ):
+              raise RuntimeError(
+                  "Douyin room info router not found"
+              )
+
+          room_info = r"""async function baseGetDouYinRoomInfoPlugin(
+            roomUrl,
+            others = {}
+          ) {
+            const normalizedUrl =
+              await resolveDouyinLiveUrl(
+                roomUrl,
+                others
+              )
+
+            const room =
+              await getDesktopRoomWithFallback(
+                normalizedUrl,
+                others
+              )
+
+            return {
+              code: SUCCESS_CODE,
+              roomInfo: {
+                name:
+                  room
+                    ?.owner
+                    ?.nickname || ''
+              }
+            }
+          }
+
+
+          """
+
+          douyin = (
+              douyin[:info_start] +
+              room_info +
+              douyin[info_end:]
+          )
+
+          write(
+              douyin_path,
+              douyin
+          )
+
+          print(
+              "[OK] Douyin parser upgraded"
+          )
+
+
+          # ========================================================
+          # B. 日志不再输出完整直播地址
+          # ========================================================
+
+          crawler_path = (
+              "src/main/crawler/index.js"
+          )
+
+          crawler = read(
+              crawler_path
+          )
+
+          crawler = crawler.replace(
+              "  log('res:', res)\n",
+              (
+                  "  log("
+                  "'crawler request completed, code:', "
+                  "res?.code"
+                  ")\n"
+              )
+          )
+
+          write(
+              crawler_path,
+              crawler
+          )
+
+          print(
+              "[OK] crawler log sanitized"
+          )
+
+
+          # ========================================================
+          # C. 更新检查地址
+          # ========================================================
+
+          main_path = (
+              "src/main/index.ts"
+          )
+
+          main = read(
+              main_path
+          )
+
+          main = re.sub(
+              (
+                  r"https://api\.github\.com/repos/"
+                  r"[^'\"\s]+/releases/latest"
+              ),
+              (
+                  "https://api.github.com/repos/"
+                  "STARSHINE56/"
+                  "fideo-live-record/"
+                  "releases/latest"
+              ),
+              main
+          )
+
+          write(
+              main_path,
+              main
+          )
+
+
+          app_path = (
+              "src/renderer/src/App.tsx"
+          )
+
+          app = read(
+              app_path
+          )
+
+          app = re.sub(
+              (
+                  r"https://github\.com/"
+                  r"[^'\"\s]+/releases/latest"
+              ),
+              (
+                  "https://github.com/"
+                  "STARSHINE56/"
+                  "fideo-live-record/"
+                  "releases/latest"
+              ),
+              app
+          )
+
+          write(
+              app_path,
+              app
+          )
+
+          print(
+              "[OK] update URLs fixed"
+          )
+
+
+          # ========================================================
+          # D. package.json 版本 / 项目地址
+          # ========================================================
+
+          package_path = Path(
+              "package.json"
+          )
+
+          package = json.loads(
+              package_path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          package[
+              "version"
+          ] = version
+
+          package[
+              "homepage"
+          ] = (
+              "https://github.com/"
+              "STARSHINE56/"
+              "fideo-live-record"
+          )
+
+          package[
+              "repository"
+          ] = {
+              "type": "git",
+              "url": (
+                  "https://github.com/"
+                  "STARSHINE56/"
+                  "fideo-live-record.git"
+              )
+          }
+
+          package_path.write_text(
+              json.dumps(
+                  package,
+                  ensure_ascii=False,
+                  indent=2
+              ) + "\n",
               encoding="utf-8"
           )
+
+
+          # ========================================================
+          # E. package-lock.json 版本同步
+          # ========================================================
+
+          lock_path = Path(
+              "package-lock.json"
+          )
+
+          if lock_path.exists():
+              lock = json.loads(
+                  lock_path.read_text(
+                      encoding="utf-8"
+                  )
+              )
+
+              lock[
+                  "version"
+              ] = version
+
+              if (
+                  isinstance(
+                      lock.get(
+                          "packages"
+                      ),
+                      dict
+                  )
+                  and ""
+                  in lock["packages"]
+              ):
+                  lock[
+                      "packages"
+                  ][
+                      ""
+                  ][
+                      "version"
+                  ] = version
+
+              lock_path.write_text(
+                  json.dumps(
+                      lock,
+                      ensure_ascii=False,
+                      indent=2
+                  ) + "\n",
+                  encoding="utf-8"
+              )
+
+          print(
+              f"[OK] version changed to {version}"
+          )
+
+
+          # ========================================================
+          # F. electron-builder 更新来源
+          # ========================================================
+
+          builder_path = (
+              "electron-builder.yml"
+          )
+
+          builder = read(
+              builder_path
+          )
+
+          builder = re.sub(
+              (
+                  r"(?ms)^publish:\s*\n"
+                  r"\s*provider:\s*generic\s*\n"
+                  r"\s*url:\s*"
+                  r"https://example\.com/auto-updates\s*$"
+              ),
+              (
+                  "publish:\n"
+                  "  provider: github\n"
+                  "  owner: STARSHINE56\n"
+                  "  repo: fideo-live-record"
+              ),
+              builder
+          )
+
+          if (
+              "provider: github"
+              not in builder
+          ):
+              builder = re.sub(
+                  r"(?ms)^publish:.*\Z",
+                  (
+                      "publish:\n"
+                      "  provider: github\n"
+                      "  owner: STARSHINE56\n"
+                      "  repo: fideo-live-record\n"
+                  ),
+                  builder
+              )
+
+          write(
+              builder_path,
+              builder
+          )
+
+          print(
+              "[OK] builder publish target fixed"
+          )
+
+
+          # ========================================================
+          # G. 最终源码检查
+          # ========================================================
+
+          required_checks = {
+              douyin_path: [
+                  "resolveDouyinLiveUrl",
+                  "getDesktopRoomWithFallback",
+                  "Douyin unsigned parser success",
+                  "Douyin A-Bogus parser success",
+                  "DOUYIN_WEB_PARSE_FAILED"
+              ],
+
+              main_path: [
+                  (
+                      "STARSHINE56/"
+                      "fideo-live-record/"
+                      "releases/latest"
+                  )
+              ],
+
+              app_path: [
+                  (
+                      "STARSHINE56/"
+                      "fideo-live-record/"
+                      "releases/latest"
+                  )
+              ],
+
+              "electron-builder.yml": [
+                  "provider: github",
+                  "owner: STARSHINE56",
+                  "repo: fideo-live-record"
+              ]
+          }
+
+          for file_path, values in (
+              required_checks.items()
+          ):
+              source = read(
+                  file_path
+              )
+
+              for value in values:
+                  if value not in source:
+                      raise RuntimeError(
+                          f"{file_path}: "
+                          f"missing {value}"
+                      )
+
+
+          package_check = json.loads(
+              Path(
+                  "package.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          if (
+              package_check.get(
+                  "version"
+              )
+              != version
+          ):
+              raise RuntimeError(
+                  "package.json version mismatch"
+              )
+
 
           print("")
           print(
-              "[OK] V2.2 Python syntax valid"
+              "================================="
           )
-
           print(
-              f"[OK] Fixed script: {temp_path}"
+              "V2.2.1 source patch completed."
+          )
+          print(
+              f"Version: {version}"
+          )
+          print(
+              "================================="
           )
           PY
 
-      - name: Checkout parser test source
-        shell: bash
-        run: |
-          git fetch origin douyin-parser-v2-test
+          python "$RUNNER_TEMP/apply_v221.py"
 
-          git switch -C \
-            douyin-v2.2-test \
-            origin/douyin-parser-v2-test
+      # ============================================================
+      # 4. 检查文件修改结果
+      # ============================================================
 
-      - name: Run repaired V2.2 patch
+      - name: Verify source changes
         shell: bash
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
-          python \
-            "$RUNNER_TEMP/douyin_v22_fixed.py"
-
-      - name: Verify modified source
-        shell: bash
-        env:
-          APP_VERSION: ${{ inputs.version }}
-        run: |
-          grep -q \
-            "getDesktopRoomWithFallback" \
-            src/main/crawler/plugins/douyin.js
+          echo "Checking Douyin parser..."
 
           grep -q \
             "resolveDouyinLiveUrl" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "getDesktopRoomWithFallback" \
             src/main/crawler/plugins/douyin.js
 
           grep -q \
@@ -265,6 +1031,8 @@ jobs:
             "Douyin A-Bogus parser success" \
             src/main/crawler/plugins/douyin.js
 
+          echo "Checking update URLs..."
+
           grep -q \
             "STARSHINE56/fideo-live-record/releases/latest" \
             src/main/index.ts
@@ -273,9 +1041,25 @@ jobs:
             "STARSHINE56/fideo-live-record/releases/latest" \
             src/renderer/src/App.tsx
 
-          grep -q \
-            "\"version\": \"$APP_VERSION\"" \
-            package.json
+          echo "Checking version..."
+
+          node -e "
+          const p = require('./package.json');
+          if (p.version !== process.env.APP_VERSION) {
+            console.error(
+              'Version mismatch:',
+              p.version,
+              process.env.APP_VERSION
+            );
+            process.exit(1);
+          }
+          console.log(
+            'Version OK:',
+            p.version
+          );
+          "
+
+          echo "Checking builder publish..."
 
           grep -q \
             "provider: github" \
@@ -289,37 +1073,57 @@ jobs:
             "repo: fideo-live-record" \
             electron-builder.yml
 
-          echo \
-            "V2.2 source verification passed."
+          echo "All source checks passed."
+
+      # ============================================================
+      # 5. Node
+      # ============================================================
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20.15.0"
-          cache: "npm"
+          cache: npm
 
-      - name: Show environment
+      - name: Show versions
         shell: pwsh
         run: |
           node --version
           npm --version
 
-          Write-Host `
-            "Architecture: $env:PROCESSOR_ARCHITECTURE"
+      # ============================================================
+      # 6. 依赖
+      # ============================================================
 
       - name: Install dependencies
         run: npm ci
 
+      # ============================================================
+      # 7. TypeScript 检查
+      # ============================================================
+
       - name: TypeScript check
         run: npm run typecheck
 
-      - name: Build Electron application
+      # ============================================================
+      # 8. 正式构建源码
+      # ============================================================
+
+      - name: Build Electron app
         run: npm run build
+
+      # ============================================================
+      # 9. Windows x64
+      # ============================================================
 
       - name: Package Windows x64
         run: npx electron-builder --win nsis --x64
 
-      - name: Verify installer
+      # ============================================================
+      # 10. 检查生成的安装包和版本
+      # ============================================================
+
+      - name: Verify Windows installer
         shell: pwsh
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -329,36 +1133,51 @@ jobs:
               package.json |
             ConvertFrom-Json
 
+          Write-Host `
+            "Package version: $($package.version)"
+
           if (
             $package.version -ne
             $env:EXPECTED_VERSION
           ) {
             throw `
-              "Version mismatch: expected $env:EXPECTED_VERSION but got $($package.version)"
+              "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
           }
 
-          $installer =
+          $installers =
             Get-ChildItem `
               -Path dist `
               -Filter "*-x64.exe"
 
           if (
-            $installer.Count -eq 0
+            $installers.Count -eq 0
           ) {
+            Write-Host `
+              "dist directory:"
+
+            Get-ChildItem `
+              -Path dist `
+              -Recurse
+
             throw `
-              "No Windows x64 installer generated."
+              "Windows x64 installer was not generated."
           }
 
           Write-Host `
-            "Version: $($package.version)"
+            "Generated installer:"
 
-          $installer |
+          $installers |
             Select-Object `
               Name,
               Length,
               FullName
 
-      - name: Commit V2.2.1 tested source
+      # ============================================================
+      # 11. 提交到测试分支
+      # main 不动
+      # ============================================================
+
+      - name: Commit tested source
         shell: bash
         run: |
           git config \
@@ -383,13 +1202,17 @@ jobs:
               "No source changes to commit."
           else
             git commit \
-              -m "Fix Douyin V2.2 parser update and version"
+              -m "Upgrade Douyin parser and fix update settings"
           fi
 
           git push \
             --force \
             origin \
             douyin-v2.2-test
+
+      # ============================================================
+      # 12. 上传测试安装包
+      # ============================================================
 
       - name: Upload Windows x64 installer
         uses: actions/upload-artifact@v4
@@ -398,3 +1221,35 @@ jobs:
           path: dist/*-x64.exe
           if-no-files-found: error
           retention-days: 7
+
+      # ============================================================
+      # 13. Summary
+      # ============================================================
+
+      - name: Build summary
+        if: always()
+        shell: bash
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "# Fideo V2.2.1"
+            echo
+            echo "Version: \`$APP_VERSION\`"
+            echo
+            echo "Test branch: \`douyin-v2.2-test\`"
+            echo
+            echo "Changes:"
+            echo
+            echo "- Douyin short-link resolver"
+            echo "- Unsigned Web API first"
+            echo "- A-Bogus fallback"
+            echo "- Removed incorrect mobile fallback for live.douyin.com"
+            echo "- Update check points to STARSHINE56/fideo-live-record"
+            echo "- Release detail URL fixed"
+            echo "- package.json homepage/repository fixed"
+            echo "- electron-builder publish source fixed"
+            echo "- Version synchronized"
+            echo "- Full stream URLs removed from crawler debug log"
+            echo "- Windows x64 test installer"
+          } >> "$GITHUB_STEP_SUMMARY"
