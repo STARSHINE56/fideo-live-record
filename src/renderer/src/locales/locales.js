@@ -116,7 +116,8 @@ export default {
           'If the resolution changes frequently during recording (e.g. YY Live), it is recommended to enable this function to detect the resolution to prevent screen tearing',
         preview: 'Preview Stream',
         preview_failed: 'Unable to play this live stream. Please try again.',
-        preview_hls_unavailable: 'No HLS stream is available for preview.'
+        preview_hls_unavailable: 'No HLS stream is available for preview.',
+        preview_stream_unavailable: 'No supported live stream is available for preview.'
       },
       start_record: 'Start Recording',
       user_stop_record: 'Stop Recording (User Manually Stopped)',
@@ -279,7 +280,8 @@ export default {
           '如果录制的过程会经常出现分辨率改变的情况(例如YY直播)，建议开启该功能检测分辨率，防止出现花屏情况',
         preview: '预览直播流',
         preview_failed: '当前直播流无法播放，请稍后重试',
-        preview_hls_unavailable: '当前没有可用于预览的 HLS 直播流'
+        preview_hls_unavailable: '当前没有可用于预览的 HLS 直播流',
+        preview_stream_unavailable: '当前没有可用于预览的直播流'
       },
       start_record: '开始录制',
       user_stop_record: '停止录制(用户手动停止)',

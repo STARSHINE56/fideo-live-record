@@ -324,35 +324,290 @@ function pushUnique(
 }
 
 
-function getStreamBitrate(
+
+function normalizeQualityName(
+  value
+) {
+  return String(
+    value || ''
+  )
+    .trim()
+    .toUpperCase()
+}
+
+function getQualityRank(
+  quality
+) {
+  const value =
+    normalizeQualityName(
+      quality
+    )
+
+  if (
+    value.includes(
+      'ORIGION'
+    ) ||
+    value.includes(
+      'ORIGIN'
+    ) ||
+    value.includes(
+      'ORIGINAL'
+    ) ||
+    value.includes(
+      'SOURCE'
+    )
+  ) {
+    return 10000
+  }
+
+  if (
+    value.includes(
+      'UHD'
+    ) ||
+    value.includes(
+      '4K'
+    )
+  ) {
+    return 9500
+  }
+
+  if (
+    value.includes(
+      'FULL_HD'
+    ) ||
+    value.includes(
+      'FULLHD'
+    ) ||
+    value.includes(
+      'FHD'
+    )
+  ) {
+    return 9000
+  }
+
+  if (
+    value.includes(
+      'HD'
+    )
+  ) {
+    return 8000
+  }
+
+  if (
+    value.includes(
+      'SD3'
+    )
+  ) {
+    return 7000
+  }
+
+  if (
+    value.includes(
+      'SD2'
+    )
+  ) {
+    return 6000
+  }
+
+  if (
+    value.includes(
+      'SD1'
+    )
+  ) {
+    return 5000
+  }
+
+  if (
+    value.includes(
+      'LD'
+    )
+  ) {
+    return 3000
+  }
+
+  return 0
+}
+
+function parseResolutionValue(
+  value
+) {
+  if (
+    value == null
+  ) {
+    return 0
+  }
+
+  if (
+    typeof value ===
+    'object'
+  ) {
+    const width =
+      Number(
+        value.width ||
+        value.w ||
+        0
+      )
+
+    const height =
+      Number(
+        value.height ||
+        value.h ||
+        0
+      )
+
+    if (
+      width > 0 &&
+      height > 0
+    ) {
+      return (
+        width *
+        height
+      )
+    }
+
+    let best = 0
+
+    for (
+      const child of
+      Object.values(
+        value
+      )
+    ) {
+      best =
+        Math.max(
+          best,
+          parseResolutionValue(
+            child
+          )
+        )
+    }
+
+    return best
+  }
+
+  const text =
+    String(value)
+
+  const match =
+    text.match(
+      /(\d{2,5})\s*[xX*×]\s*(\d{2,5})/
+    )
+
+  if (!match) {
+    return 0
+  }
+
+  const width =
+    Number(match[1])
+
+  const height =
+    Number(match[2])
+
+  if (
+    width <= 0 ||
+    height <= 0
+  ) {
+    return 0
+  }
+
+  return (
+    width *
+    height
+  )
+}
+
+function parseSdkParams(
   main
 ) {
   try {
     const raw =
       main?.sdk_params
 
-    const params =
-      typeof raw === 'string'
-        ? JSON.parse(raw)
-        : raw
-
-    const value =
-      Number(
-        params?.vbitrate ||
-        params?.bitrate ||
-        0
-      )
+    if (!raw) {
+      return {}
+    }
 
     return (
-      Number.isFinite(
-        value
-      )
-        ? value
-        : 0
+      typeof raw ===
+        'string'
+        ? JSON.parse(raw)
+        : raw
     )
   } catch {
-    return 0
+    return {}
   }
+}
+
+function getStreamBitrate(
+  main
+) {
+  const params =
+    parseSdkParams(
+      main
+    )
+
+  const values = [
+    params?.vbitrate,
+    params?.bitrate,
+    params?.video_bitrate,
+    main?.vbitrate,
+    main?.bitrate
+  ]
+
+  for (
+    const item of values
+  ) {
+    const value =
+      Number(item)
+
+    if (
+      Number.isFinite(
+        value
+      ) &&
+      value > 0
+    ) {
+      return value
+    }
+  }
+
+  return 0
+}
+
+function getStreamResolution(
+  main
+) {
+  const params =
+    parseSdkParams(
+      main
+    )
+
+  const candidates = [
+    params?.candidate_resolution,
+    params?.default_resolution,
+    params?.resolution,
+    params?.video_resolution,
+    params?.resolution_name,
+    main?.candidate_resolution,
+    main?.default_resolution,
+    main?.resolution
+  ]
+
+  let best = 0
+
+  for (
+    const candidate of
+    candidates
+  ) {
+    best =
+      Math.max(
+        best,
+        parseResolutionValue(
+          candidate
+        )
+      )
+  }
+
+  return best
 }
 
 function collectMainStreamCandidates(
@@ -367,7 +622,7 @@ function collectMainStreamCandidates(
   try {
     const parsed =
       typeof streamData ===
-      'string'
+        'string'
         ? JSON.parse(
             streamData
           )
@@ -396,13 +651,30 @@ function collectMainStreamCandidates(
           main
         )
 
+      const resolution =
+        getStreamResolution(
+          main
+        )
+
+      const rank =
+        getQualityRank(
+          quality
+        )
+
       if (main.flv) {
         result.push({
           url:
             main.flv,
+
           type:
             'flv',
+
           quality,
+
+          rank,
+
+          resolution,
+
           bitrate
         })
       }
@@ -411,15 +683,22 @@ function collectMainStreamCandidates(
         result.push({
           url:
             main.hls,
+
           type:
             'hls',
+
           quality,
+
+          rank,
+
+          resolution,
+
           bitrate
         })
       }
     }
   } catch {
-    // Ignore malformed stream info.
+    // Ignore malformed stream data.
   }
 
   return result
@@ -453,14 +732,33 @@ function collectDesktopStreams(
 
       seen.add(url)
 
+      const quality =
+        candidate.quality ||
+        ''
+
       candidates.push({
         url,
+
         type:
           candidate.type ||
           'unknown',
-        quality:
-          candidate.quality ||
-          '',
+
+        quality,
+
+        rank:
+          Number(
+            candidate.rank ??
+            getQualityRank(
+              quality
+            )
+          ),
+
+        resolution:
+          Number(
+            candidate.resolution ||
+            0
+          ),
+
         bitrate:
           Number(
             candidate.bitrate ||
@@ -525,9 +823,22 @@ function collectDesktopStreams(
     ) {
       addCandidate({
         url,
-        type: 'flv',
+
+        type:
+          'flv',
+
         quality,
-        bitrate: 0
+
+        rank:
+          getQualityRank(
+            quality
+          ),
+
+        resolution:
+          0,
+
+        bitrate:
+          0
       })
     }
   }
@@ -547,15 +858,48 @@ function collectDesktopStreams(
     ) {
       addCandidate({
         url,
-        type: 'hls',
+
+        type:
+          'hls',
+
         quality,
-        bitrate: 0
+
+        rank:
+          getQualityRank(
+            quality
+          ),
+
+        resolution:
+          0,
+
+        bitrate:
+          0
       })
     }
   }
 
   candidates.sort(
     (a, b) => {
+      if (
+        b.rank !==
+        a.rank
+      ) {
+        return (
+          b.rank -
+          a.rank
+        )
+      }
+
+      if (
+        b.resolution !==
+        a.resolution
+      ) {
+        return (
+          b.resolution -
+          a.resolution
+        )
+      }
+
       if (
         b.bitrate !==
         a.bitrate
@@ -587,6 +931,33 @@ function collectDesktopStreams(
       return 0
     }
   )
+
+  if (
+    candidates.length > 0
+  ) {
+    const best =
+      candidates[0]
+
+    log(
+      'Douyin best stream:',
+      {
+        quality:
+          best.quality,
+
+        type:
+          best.type,
+
+        rank:
+          best.rank,
+
+        resolution:
+          best.resolution,
+
+        bitrate:
+          best.bitrate
+      }
+    )
+  }
 
   return candidates.map(
     (item) =>

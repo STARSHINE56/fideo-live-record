@@ -47,6 +47,7 @@ export default function OperationBar(props: OperationBarProps) {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewUrl, setPreviewUrl] = useState('')
+  const [previewType, setPreviewType] = useState<'hls' | 'flv'>('hls')
 
   const { removeStreamConfig, updateStreamConfig } = useStreamConfigStore((state) => ({
     streamConfigList: state.streamConfigList,
@@ -148,56 +149,187 @@ export default function OperationBar(props: OperationBarProps) {
     clearTimeout(timer.current)
   }
 
+
   const handlePreviewClick = async () => {
-    setIsLoadingPreview(true)
-    const { code, liveUrls } = await window.api.getLiveUrls({
-      roomUrl: streamConfig.roomUrl,
-      cookie: streamConfig.cookie,
-      proxy: streamConfig.proxy,
-      title: streamConfig.title
-    })
-    setIsLoadingPreview(false)
-
-    if (code !== SUCCESS_CODE) {
-      toast({
-        title: streamConfig.title,
-        description: t(errorCodeToI18nMessage(code, 'error.get_line.')),
-        variant: 'destructive'
-      })
-      return
-    }
-
-    const hlsUrl =
-    liveUrls.find(
-      (url) =>
-        /\\.m3u8(?:\\?|$)/i.test(
-          url
-        )
+    setIsLoadingPreview(
+      true
     )
 
-  if (!hlsUrl) {
-    toast({
-      title:
-        streamConfig.title,
-      description:
-        t(
-          'stream_config.preview_hls_unavailable'
-        ),
-      variant:
-        'destructive'
-    })
+    try {
+      const {
+        code,
+        liveUrls
+      } =
+        await window.api.getLiveUrls({
+          roomUrl:
+            streamConfig.roomUrl,
 
-    return
+          cookie:
+            streamConfig.cookie,
+
+          proxy:
+            streamConfig.proxy,
+
+          title:
+            streamConfig.title
+        })
+
+      if (
+        code !==
+        SUCCESS_CODE
+      ) {
+        toast({
+          title:
+            streamConfig.title,
+
+          description:
+            t(
+              errorCodeToI18nMessage(
+                code,
+                'error.get_line.'
+              )
+            ),
+
+          variant:
+            'destructive'
+        })
+
+        return
+      }
+
+      if (
+        !Array.isArray(
+          liveUrls
+        ) ||
+        liveUrls.length ===
+          0
+      ) {
+        toast({
+          title:
+            streamConfig.title,
+
+          description:
+            t(
+              'stream_config.preview_stream_unavailable'
+            ),
+
+          variant:
+            'destructive'
+        })
+
+        return
+      }
+
+      const hlsUrl =
+        liveUrls.find(
+          (url) =>
+            /\.m3u8(?:\?|$)/i.test(
+              url
+            ) ||
+            /pull-hls/i.test(
+              url
+            ) ||
+            /\/hls\//i.test(
+              url
+            )
+        )
+
+      if (hlsUrl) {
+        setPreviewType(
+          'hls'
+        )
+
+        setPreviewUrl(
+          hlsUrl
+        )
+
+        setPreviewOpen(
+          true
+        )
+
+        return
+      }
+
+      const flvUrl =
+        liveUrls.find(
+          (url) =>
+            /\.flv(?:\?|$)/i.test(
+              url
+            ) ||
+            /pull-flv/i.test(
+              url
+            ) ||
+            /\/flv\//i.test(
+              url
+            )
+        )
+
+      if (flvUrl) {
+        setPreviewType(
+          'flv'
+        )
+
+        setPreviewUrl(
+          flvUrl
+        )
+
+        setPreviewOpen(
+          true
+        )
+
+        return
+      }
+
+      const fallback =
+        liveUrls.find(
+          (url) =>
+            /^https?:\/\//i.test(
+              url
+            )
+        )
+
+      if (fallback) {
+        const looksLikeFlv =
+          /flv/i.test(
+            fallback
+          )
+
+        setPreviewType(
+          looksLikeFlv
+            ? 'flv'
+            : 'hls'
+        )
+
+        setPreviewUrl(
+          fallback
+        )
+
+        setPreviewOpen(
+          true
+        )
+
+        return
+      }
+
+      toast({
+        title:
+          streamConfig.title,
+
+        description:
+          t(
+            'stream_config.preview_stream_unavailable'
+          ),
+
+        variant:
+          'destructive'
+      })
+    } finally {
+      setIsLoadingPreview(
+        false
+      )
+    }
   }
 
-  setPreviewUrl(
-    hlsUrl
-  )
-
-  setPreviewOpen(
-    true
-  )
-  }
 
   useEffect(() => {
     const handleRecordEndNotUserStop = async (id: string) => {
@@ -277,6 +409,7 @@ export default function OperationBar(props: OperationBarProps) {
         streamConfig.title
       }
       url={previewUrl}
+      type={previewType}
       errorText={
         t(
           'stream_config.preview_failed'

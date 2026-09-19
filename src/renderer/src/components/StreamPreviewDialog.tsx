@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
+import mpegts from 'mpegts.js'
 
 import {
   Dialog,
@@ -8,11 +9,18 @@ import {
   DialogTitle
 } from '@/shadcn/ui/dialog'
 
+type PreviewType =
+  | 'hls'
+  | 'flv'
+
 interface StreamPreviewDialogProps {
   open: boolean
-  onOpenChange: (open: boolean) => void
+  onOpenChange: (
+    open: boolean
+  ) => void
   title: string
   url: string
+  type: PreviewType
   errorText: string
 }
 
@@ -24,6 +32,7 @@ export default function StreamPreviewDialog(
     onOpenChange,
     title,
     url,
+    type,
     errorText
   } = props
 
@@ -49,104 +58,290 @@ export default function StreamPreviewDialog(
 
     setError(false)
 
-    let hls: Hls | null =
-      null
+    let hls:
+      | Hls
+      | null = null
+
+    let flvPlayer:
+      | ReturnType<
+          typeof mpegts.createPlayer
+        >
+      | null = null
 
     const cleanup = () => {
       if (hls) {
-        hls.destroy()
+        try {
+          hls.destroy()
+        } catch {
+          // Ignore cleanup error.
+        }
+
         hls = null
       }
 
-      video.pause()
-      video.removeAttribute(
-        'src'
-      )
-      video.load()
+      if (flvPlayer) {
+        try {
+          flvPlayer.pause()
+        } catch {
+          // Ignore.
+        }
+
+        try {
+          flvPlayer.unload()
+        } catch {
+          // Ignore.
+        }
+
+        try {
+          flvPlayer.detachMediaElement()
+        } catch {
+          // Ignore.
+        }
+
+        try {
+          flvPlayer.destroy()
+        } catch {
+          // Ignore.
+        }
+
+        flvPlayer = null
+      }
+
+      try {
+        video.pause()
+
+        video.removeAttribute(
+          'src'
+        )
+
+        video.load()
+      } catch {
+        // Ignore cleanup error.
+      }
     }
 
-    if (
-      video.canPlayType(
-        'application/vnd.apple.mpegurl'
-      )
-    ) {
-      video.src = url
-
-      video
-        .play()
-        .catch(() => {})
-
-      return cleanup
-    }
+    // ================================================
+    // HLS preview
+    // ================================================
 
     if (
-      Hls.isSupported()
+      type === 'hls'
     ) {
-      hls = new Hls({
-        lowLatencyMode: true,
-        backBufferLength: 30,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60
-      })
+      if (
+        video.canPlayType(
+          'application/vnd.apple.mpegurl'
+        )
+      ) {
+        video.src = url
 
-      hls.loadSource(url)
-      hls.attachMedia(video)
+        const playResult =
+          video.play()
 
-      hls.on(
-        Hls.Events.MANIFEST_PARSED,
-        () => {
+        if (playResult) {
+          playResult.catch(
+            () => {}
+          )
+        }
+
+        return cleanup
+      }
+
+      if (
+        Hls.isSupported()
+      ) {
+        hls =
+          new Hls({
+            lowLatencyMode:
+              true,
+
+            backBufferLength:
+              30,
+
+            maxBufferLength:
+              30,
+
+            maxMaxBufferLength:
+              60
+          })
+
+        hls.loadSource(
+          url
+        )
+
+        hls.attachMedia(
           video
-            .play()
-            .catch(() => {})
-        }
-      )
+        )
 
-      hls.on(
-        Hls.Events.ERROR,
-        (_, data) => {
-          if (
-            !data.fatal
-          ) {
-            return
-          }
+        hls.on(
+          Hls.Events.MANIFEST_PARSED,
+          () => {
+            const playResult =
+              video.play()
 
-          if (
-            data.type ===
-            Hls.ErrorTypes.NETWORK_ERROR
-          ) {
-            try {
-              hls?.startLoad()
-              return
-            } catch {
-              setError(true)
-              return
+            if (playResult) {
+              playResult.catch(
+                () => {}
+              )
             }
           }
+        )
 
-          if (
-            data.type ===
-            Hls.ErrorTypes.MEDIA_ERROR
-          ) {
-            try {
-              hls?.recoverMediaError()
-              return
-            } catch {
-              setError(true)
+        hls.on(
+          Hls.Events.ERROR,
+          (_, data) => {
+            if (
+              !data.fatal
+            ) {
               return
             }
-          }
 
-          setError(true)
-        }
-      )
+            if (
+              data.type ===
+              Hls.ErrorTypes.NETWORK_ERROR
+            ) {
+              try {
+                hls?.startLoad()
+                return
+              } catch {
+                setError(true)
+                return
+              }
+            }
+
+            if (
+              data.type ===
+              Hls.ErrorTypes.MEDIA_ERROR
+            ) {
+              try {
+                hls?.recoverMediaError()
+                return
+              } catch {
+                setError(true)
+                return
+              }
+            }
+
+            setError(true)
+          }
+        )
+
+        return cleanup
+      }
+
+      setError(true)
 
       return cleanup
+    }
+
+    // ================================================
+    // FLV preview
+    // ================================================
+
+    if (
+      type === 'flv'
+    ) {
+      if (
+        !mpegts.isSupported()
+      ) {
+        setError(true)
+
+        return cleanup
+      }
+
+      try {
+        flvPlayer =
+          mpegts.createPlayer(
+            {
+              type:
+                'flv',
+
+              isLive:
+                true,
+
+              url,
+
+              cors:
+                true,
+
+              withCredentials:
+                false
+            },
+
+            {
+              enableWorker:
+                false,
+
+              enableStashBuffer:
+                true,
+
+              stashInitialSize:
+                384 * 1024,
+
+              autoCleanupSourceBuffer:
+                true,
+
+              autoCleanupMaxBackwardDuration:
+                30,
+
+              autoCleanupMinBackwardDuration:
+                10,
+
+              lazyLoad:
+                false,
+
+              liveBufferLatencyChasing:
+                true,
+
+              liveBufferLatencyMaxLatency:
+                3,
+
+              liveBufferLatencyMinRemain:
+                0.5
+            }
+          )
+
+        flvPlayer.attachMediaElement(
+          video
+        )
+
+        flvPlayer.load()
+
+        const playResult =
+          flvPlayer.play()
+
+        if (
+          playResult &&
+          typeof playResult.catch ===
+            'function'
+        ) {
+          playResult.catch(
+            () => {}
+          )
+        }
+
+        flvPlayer.on(
+          mpegts.Events.ERROR,
+          () => {
+            setError(true)
+          }
+        )
+
+        return cleanup
+      } catch {
+        setError(true)
+
+        return cleanup
+      }
     }
 
     setError(true)
 
     return cleanup
-  }, [open, url])
+  }, [
+    open,
+    url,
+    type
+  ])
 
   return (
     <Dialog
