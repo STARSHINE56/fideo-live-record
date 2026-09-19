@@ -43,28 +43,31 @@ jobs:
         run: |
           npm ci
 
-      # ==========================================================
-      # 本地直播流代理
-      # ==========================================================
-
       - name: Create local preview proxy
         run: |
           cat > src/main/preview-proxy.ts <<'TS'
-          import http, {
-            type IncomingMessage,
-            type Server,
-            type ServerResponse
+          import * as http from 'node:http'
+          import * as https from 'node:https'
+
+          import type {
+            IncomingMessage,
+            Server,
+            ServerResponse
           } from 'node:http'
-          import https from 'node:https'
 
           interface PreviewContext {
             roomUrl: string
             cookie?: string
           }
 
-          let server: Server | null = null
+          let server: Server | null =
+            null
+
           let serverPort = 0
-          let context: PreviewContext | null = null
+
+          let context:
+            | PreviewContext
+            | null = null
 
           const USER_AGENT =
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
@@ -76,7 +79,9 @@ jobs:
           ) {
             return (
               `http://127.0.0.1:${serverPort}` +
-              `/proxy?url=${encodeURIComponent(target)}`
+              `/proxy?url=${encodeURIComponent(
+                target
+              )}`
             )
           }
 
@@ -113,7 +118,10 @@ jobs:
                 ) {
                   return line.replace(
                     /URI="([^"]+)"/g,
-                    (_, value) => {
+                    (
+                      _,
+                      value: string
+                    ) => {
                       const resolved =
                         resolveUrl(
                           value,
@@ -226,25 +234,27 @@ jobs:
 
                   headers
                 },
+
                 (upstreamRes) => {
                   const status =
-                    upstreamRes.statusCode ||
+                    upstreamRes
+                      .statusCode ||
                     500
+
+                  const location =
+                    upstreamRes
+                      .headers
+                      .location
 
                   if (
                     status >= 300 &&
                     status < 400 &&
-                    upstreamRes
-                      .headers
-                      .location &&
+                    location &&
                     redirectCount < 5
                   ) {
                     const nextUrl =
                       resolveUrl(
-                        upstreamRes
-                          .headers
-                          .location,
-
+                        location,
                         target.toString()
                       )
 
@@ -270,9 +280,11 @@ jobs:
                     )
 
                   const isHls =
-                    contentType.includes(
-                      'mpegurl'
-                    ) ||
+                    contentType
+                      .toLowerCase()
+                      .includes(
+                        'mpegurl'
+                      ) ||
                     /\.m3u8(?:\?|$)/i.test(
                       target.toString()
                     )
@@ -291,6 +303,11 @@ jobs:
                   )
 
                   clientRes.setHeader(
+                    'Access-Control-Allow-Methods',
+                    'GET, HEAD, OPTIONS'
+                  )
+
+                  clientRes.setHeader(
                     'Cache-Control',
                     'no-store'
                   )
@@ -303,7 +320,8 @@ jobs:
                   }
 
                   const acceptRanges =
-                    upstreamRes.headers[
+                    upstreamRes
+                      .headers[
                       'accept-ranges'
                     ]
 
@@ -315,7 +333,8 @@ jobs:
                   }
 
                   const contentRange =
-                    upstreamRes.headers[
+                    upstreamRes
+                      .headers[
                       'content-range'
                     ]
 
@@ -328,7 +347,8 @@ jobs:
 
                   if (!isHls) {
                     const contentLength =
-                      upstreamRes.headers[
+                      upstreamRes
+                        .headers[
                         'content-length'
                       ]
 
@@ -345,10 +365,11 @@ jobs:
                       clientRes
                     )
 
-                    clientReq.on(
+                    clientRes.on(
                       'close',
                       () => {
                         upstreamReq.destroy()
+                        upstreamRes.destroy()
                       }
                     )
 
@@ -376,6 +397,13 @@ jobs:
                   upstreamRes.on(
                     'end',
                     () => {
+                      if (
+                        clientRes
+                          .writableEnded
+                      ) {
+                        return
+                      }
+
                       const text =
                         Buffer.concat(
                           chunks
@@ -434,7 +462,10 @@ jobs:
           }
 
           async function ensureServer() {
-            if (server) {
+            if (
+              server &&
+              serverPort > 0
+            ) {
               return
             }
 
@@ -447,6 +478,16 @@ jobs:
                   res.setHeader(
                     'Access-Control-Allow-Origin',
                     '*'
+                  )
+
+                  res.setHeader(
+                    'Access-Control-Allow-Headers',
+                    '*'
+                  )
+
+                  res.setHeader(
+                    'Access-Control-Allow-Methods',
+                    'GET, HEAD, OPTIONS'
                   )
 
                   if (
@@ -484,9 +525,11 @@ jobs:
                   }
 
                   const target =
-                    reqUrl.searchParams.get(
-                      'url'
-                    )
+                    reqUrl
+                      .searchParams
+                      .get(
+                        'url'
+                      )
 
                   if (!target) {
                     res.statusCode =
@@ -512,17 +555,30 @@ jobs:
                 resolve,
                 reject
               ) => {
-                server!.once(
+                const current =
+                  server!
+
+                const onError =
+                  (error: Error) => {
+                    reject(error)
+                  }
+
+                current.once(
                   'error',
-                  reject
+                  onError
                 )
 
-                server!.listen(
+                current.listen(
                   0,
                   '127.0.0.1',
                   () => {
+                    current.removeListener(
+                      'error',
+                      onError
+                    )
+
                     const address =
-                      server!.address()
+                      current.address()
 
                     if (
                       !address ||
@@ -586,19 +642,32 @@ jobs:
             server = null
             serverPort = 0
 
+            try {
+              const extended =
+                current as Server & {
+                  closeAllConnections?: () => void
+                }
+
+              extended
+                .closeAllConnections
+                ?.()
+            } catch {
+              // Ignore.
+            }
+
             await new Promise<void>(
               (resolve) => {
-                current.close(
-                  () => resolve()
-                )
+                try {
+                  current.close(
+                    () => resolve()
+                  )
+                } catch {
+                  resolve()
+                }
               }
             )
           }
           TS
-
-      # ==========================================================
-      # V2.5 主补丁
-      # ==========================================================
 
       - name: Create V2.5 source patch
         run: |
@@ -624,16 +693,14 @@ jobs:
             )
           }
 
-          function replaceOnce(
+          function mustReplace(
             source,
-            oldText,
-            newText,
+            pattern,
+            replacement,
             label
           ) {
             if (
-              !source.includes(
-                oldText
-              )
+              !pattern.test(source)
             ) {
               throw new Error(
                 `Patch target not found: ${label}`
@@ -641,14 +708,15 @@ jobs:
             }
 
             return source.replace(
-              oldText,
-              newText
+              pattern,
+              replacement
             )
           }
 
-          // ======================================================
-          // 1. type.d.ts
-          // ======================================================
+
+          // ====================================================
+          // type.d.ts
+          // ====================================================
 
           const typePath =
             'type.d.ts'
@@ -662,12 +730,12 @@ jobs:
             )
           ) {
             typeSource =
-              replaceOnce(
+              mustReplace(
                 typeSource,
 
-                `  detectResolution: boolean`,
+                /(\s+detectResolution:\s*boolean)/,
 
-                `  detectResolution: boolean
+                `$1
             autoRecord: boolean`,
 
                 'IStreamConfig autoRecord'
@@ -680,9 +748,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 2. const.ts
-          // ======================================================
+          // ====================================================
+          // const.ts
+          // ====================================================
 
           const constPath =
             'src/const.ts'
@@ -696,10 +764,10 @@ jobs:
             )
           ) {
             constSource =
-              replaceOnce(
+              mustReplace(
                 constSource,
 
-                `export const GET_ROOM_INFO = 'GET_ROOM_INFO'`,
+                /export const GET_ROOM_INFO = 'GET_ROOM_INFO'/,
 
                 `export const GET_ROOM_INFO = 'GET_ROOM_INFO'
             export const START_STREAM_PREVIEW = 'START_STREAM_PREVIEW'
@@ -715,9 +783,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 3. Existing config migration
-          // ======================================================
+          // ====================================================
+          // Existing configs migration
+          // ====================================================
 
           const storePath =
             'src/renderer/src/store/useStreamConfigStore.ts'
@@ -730,30 +798,29 @@ jobs:
               'typeof streamConfig.autoRecord'
             )
           ) {
+            const migrationPattern =
+              /if\s*\(\s*!streamConfig\.id\s*\)\s*\{\s*shouldUpdate\s*=\s*true\s*streamConfig\.id\s*=\s*nanoid\(\)\s*\}\s*return\s+streamConfig/m
+
             store =
-              replaceOnce(
+              mustReplace(
                 store,
 
-                `      if (!streamConfig.id) {
-                    shouldUpdate = true
-                    streamConfig.id = nanoid()
-                  }
-                  return streamConfig`,
+                migrationPattern,
 
-                `      if (!streamConfig.id) {
-                    shouldUpdate = true
-                    streamConfig.id = nanoid()
-                  }
+                `if (!streamConfig.id) {
+                  shouldUpdate = true
+                  streamConfig.id = nanoid()
+                }
 
-                  if (
-                    typeof streamConfig.autoRecord !==
-                    'boolean'
-                  ) {
-                    shouldUpdate = true
-                    streamConfig.autoRecord = true
-                  }
+                if (
+                  typeof streamConfig.autoRecord !==
+                  'boolean'
+                ) {
+                  shouldUpdate = true
+                  streamConfig.autoRecord = true
+                }
 
-                  return streamConfig`,
+                return streamConfig`,
 
                 'config migration'
               )
@@ -765,9 +832,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 4. StreamConfigSheet
-          // ======================================================
+          // ====================================================
+          // StreamConfigSheet
+          // ====================================================
 
           const sheetPath =
             'src/renderer/src/components/StreamConfigSheet.tsx'
@@ -781,15 +848,15 @@ jobs:
             )
           ) {
             sheet =
-              replaceOnce(
+              mustReplace(
                 sheet,
 
-                `  detectResolution: z.boolean()`,
+                /detectResolution:\s*z\.boolean\(\)/,
 
-                `  detectResolution: z.boolean(),
+                `detectResolution: z.boolean(),
               autoRecord: z.boolean()`,
 
-                'form schema autoRecord'
+                'autoRecord schema'
               )
           }
 
@@ -799,75 +866,73 @@ jobs:
             )
           ) {
             sheet =
-              replaceOnce(
+              mustReplace(
                 sheet,
 
-                `  detectResolution: false`,
+                /detectResolution:\s*false/,
 
-                `  detectResolution: false,
+                `detectResolution: false,
               autoRecord: true`,
 
-                'default autoRecord'
+                'autoRecord default'
               )
           }
 
           if (
             !sheet.includes(
-              `name="autoRecord"`
+              'name="autoRecord"'
             )
           ) {
-            const marker =
-              `                <FormField
-                              control={form.control}
-                              name="convertToMP4"`
+            const insertMarker =
+              /(\s*<FormField\s*\n\s*control=\{form\.control\}\s*\n\s*name="convertToMP4")/m
 
             if (
-              !sheet.includes(
-                marker
+              !insertMarker.test(
+                sheet
               )
             ) {
               throw new Error(
-                'autoRecord UI insertion marker missing'
+                'Patch target not found: autoRecord UI insertion'
               )
             }
 
-            const autoRecordField =
-              `                <FormField
-                            control={form.control}
-                            name="autoRecord"
-                            render={({ field }) => (
-                              <FormItem>
-                                <TooltipProvider delayDuration={400}>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <FormLabel className="cursor-pointer">
-                                        {t('stream_config.auto_record')}
-                                      </FormLabel>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-[400px]">
-                                        {t('stream_config.auto_record_tooltip')}
-                                      </p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
+            const field = `
+                <FormField
+                  control={form.control}
+                  name="autoRecord"
+                  render={({ field }) => (
+                    <FormItem>
+                      <TooltipProvider delayDuration={400}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <FormLabel className="cursor-pointer">
+                              {t('stream_config.auto_record')}
+                            </FormLabel>
+                          </TooltipTrigger>
 
-                                <Switch
-                                  checked={field.value}
-                                  onCheckedChange={field.onChange}
-                                  className="flex"
-                                />
-                              </FormItem>
-                            )}
-                          />
+                          <TooltipContent>
+                            <p className="max-w-[400px]">
+                              {t('stream_config.auto_record_tooltip')}
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
 
-              `
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        className="flex"
+                      />
+                    </FormItem>
+                  )}
+                />
+
+          `
 
             sheet =
               sheet.replace(
-                marker,
-                autoRecordField +
-                  marker
+                insertMarker,
+                field + '$1'
               )
           }
 
@@ -877,9 +942,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 5. Locales
-          // ======================================================
+          // ====================================================
+          // Locales
+          // ====================================================
 
           const localePath =
             'src/renderer/src/locales/locales.js'
@@ -893,19 +958,20 @@ jobs:
             )
           ) {
             locale =
-              replaceOnce(
+              mustReplace(
                 locale,
 
-                `        should_convert_to_mp4: 'Convert to MP4 after recording ends',`,
+                /(\s+should_convert_to_mp4:\s*'Convert to MP4 after recording ends',)/,
 
-                `        auto_record: 'Automatically Record When Live',
+                `
+                    auto_record: 'Automatically Record When Live',
                     auto_record_tooltip:
-                      'When disabled, Fideo only monitors the streamer and sends a notification when the stream starts. It will not start FFmpeg recording.',
+                      'When disabled, only monitor and notify when the streamer goes live. FFmpeg recording will not start.',
                     live_detected: 'Streamer is live',
                     live_detected_notify: '{{title}} is now live',
-                    should_convert_to_mp4: 'Convert to MP4 after recording ends',`,
+            $1`,
 
-                'English auto record locale'
+                'English autoRecord locale'
               )
           }
 
@@ -915,19 +981,20 @@ jobs:
             )
           ) {
             locale =
-              replaceOnce(
+              mustReplace(
                 locale,
 
-                `        should_convert_to_mp4: '录制结束后是否转为MP4',`,
+                /(\s+should_convert_to_mp4:\s*'录制结束后是否转为MP4',)/,
 
-                `        auto_record: '开播后自动录制',
+                `
+                    auto_record: '开播后自动录制',
                     auto_record_tooltip:
                       '关闭后只监控主播是否开播；检测到开播时发送通知，但不会启动 FFmpeg 录制。',
                     live_detected: '检测到主播开播',
                     live_detected_notify: '{{title}} 已经开播',
-                    should_convert_to_mp4: '录制结束后是否转为MP4',`,
+            $1`,
 
-                'Chinese auto record locale'
+                'Chinese autoRecord locale'
               )
           }
 
@@ -937,9 +1004,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 6. Preload
-          // ======================================================
+          // ====================================================
+          // Preload
+          // ====================================================
 
           const preloadPath =
             'src/preload/index.ts'
@@ -953,16 +1020,16 @@ jobs:
             )
           ) {
             preload =
-              replaceOnce(
+              mustReplace(
                 preload,
 
-                `  GET_ROOM_INFO,`,
+                /(\s+GET_ROOM_INFO,)/,
 
-                `  GET_ROOM_INFO,
+                `$1
               START_STREAM_PREVIEW,
               STOP_STREAM_PREVIEW,`,
 
-                'preload constant imports'
+                'preload imports'
               )
           }
 
@@ -971,33 +1038,34 @@ jobs:
               'startStreamPreview:'
             )
           ) {
+            const roomInfoMethod =
+              /(\s+getRoomInfo:\s*\(info:\s*\{\s*roomUrl:\s*string;\s*proxy\?:\s*string;\s*cookie\?:\s*string\s*\}\)\s*=>\s*\n\s*ipcRenderer\.invoke\(GET_ROOM_INFO,\s*info\),)/m
+
             preload =
-              replaceOnce(
+              mustReplace(
                 preload,
 
-                `  getRoomInfo: (info: { roomUrl: string; proxy?: string; cookie?: string }) =>
-                  ipcRenderer.invoke(GET_ROOM_INFO, info),`,
+                roomInfoMethod,
 
-                `  getRoomInfo: (info: { roomUrl: string; proxy?: string; cookie?: string }) =>
-                  ipcRenderer.invoke(GET_ROOM_INFO, info),
+                `$1
 
-                startStreamPreview: (info: {
-                  streamUrl: string
-                  roomUrl: string
-                  proxy?: string
-                  cookie?: string
-                }) =>
-                  ipcRenderer.invoke(
-                    START_STREAM_PREVIEW,
-                    info
-                  ),
+              startStreamPreview: (info: {
+                streamUrl: string
+                roomUrl: string
+                proxy?: string
+                cookie?: string
+              }) =>
+                ipcRenderer.invoke(
+                  START_STREAM_PREVIEW,
+                  info
+                ),
 
-                stopStreamPreview: () =>
-                  ipcRenderer.invoke(
-                    STOP_STREAM_PREVIEW
-                  ),`,
+              stopStreamPreview: () =>
+                ipcRenderer.invoke(
+                  STOP_STREAM_PREVIEW
+                ),`,
 
-                'preload preview methods'
+                'preload preview APIs'
               )
           }
 
@@ -1007,9 +1075,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 7. Preload typings
-          // ======================================================
+          // ====================================================
+          // Preload type
+          // ====================================================
 
           const preloadTypePath =
             'src/preload/index.d.ts'
@@ -1023,12 +1091,12 @@ jobs:
             )
           ) {
             preloadType =
-              replaceOnce(
+              mustReplace(
                 preloadType,
 
-                `      navByDefaultBrowser: (url: string) => void`,
+                /(\s+navByDefaultBrowser:\s*\(url:\s*string\)\s*=>\s*void)/,
 
-                `      navByDefaultBrowser: (url: string) => void
+                `$1
 
                   startStreamPreview: (info: {
                     streamUrl: string
@@ -1041,7 +1109,7 @@ jobs:
 
                   stopStreamPreview: () => Promise<void>`,
 
-                'preload preview typing'
+                'preload preview type'
               )
           }
 
@@ -1051,9 +1119,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 8. Main process
-          // ======================================================
+          // ====================================================
+          // Main process
+          // ====================================================
 
           const mainPath =
             'src/main/index.ts'
@@ -1067,12 +1135,12 @@ jobs:
             )
           ) {
             main =
-              replaceOnce(
+              mustReplace(
                 main,
 
-                `  GET_ROOM_INFO,`,
+                /(\s+GET_ROOM_INFO,)/,
 
-                `  GET_ROOM_INFO,
+                `$1
               START_STREAM_PREVIEW,
               STOP_STREAM_PREVIEW,`,
 
@@ -1086,10 +1154,10 @@ jobs:
             )
           ) {
             main =
-              replaceOnce(
+              mustReplace(
                 main,
 
-                `import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'`,
+                /import \{ startFrpcProcess, stopFrpc, frpcObj \} from '\.\/frpc'/,
 
                 `import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
             import {
@@ -1103,27 +1171,18 @@ jobs:
 
           if (
             !main.includes(
-              `ipcMain.handle(
-                START_STREAM_PREVIEW`
+              'ipcMain.handle(\n    START_STREAM_PREVIEW'
+            ) &&
+            !main.includes(
+              'ipcMain.handle(\r\n    START_STREAM_PREVIEW'
             )
           ) {
-            const marker =
-              `  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
-                shell.openExternal(url)
-              })`
+            const navHandler =
+              /(\s*ipcMain\.handle\(NAV_BY_DEFAULT_BROWSER,\s*\(_,\s*url:\s*string\)\s*=>\s*\{\s*shell\.openExternal\(url\)\s*\}\))/m
 
-            if (
-              !main.includes(
-                marker
-              )
-            ) {
-              throw new Error(
-                'main preview IPC marker missing'
-              )
-            }
+            const handlers = `
 
-            const handlers =
-              `  ipcMain.handle(
+              ipcMain.handle(
                 START_STREAM_PREVIEW,
                 async (
                   _,
@@ -1160,39 +1219,38 @@ jobs:
                 async () => {
                   await stopPreviewProxy()
                 }
-              )
-
-            `
+              )`
 
             main =
-              main.replace(
-                marker,
-                marker +
-                  '\n\n' +
-                  handlers
+              mustReplace(
+                main,
+
+                navHandler,
+
+                `$1${handlers}`,
+
+                'preview IPC handlers'
               )
           }
 
           if (
             !main.includes(
-              `await stopPreviewProxy()
-                stopFrpc()`
+              'void stopPreviewProxy()'
             )
           ) {
             main =
-              replaceOnce(
+              mustReplace(
                 main,
 
-                `    stopFrpc()
+                /(\s+stopFrpc\(\)\s*\n\s*\n\s*win\?\.destroy\(\))/,
 
-                win?.destroy()`,
-
-                `    await stopPreviewProxy()
+                `
+                void stopPreviewProxy()
                 stopFrpc()
 
                 win?.destroy()`,
 
-                'stop proxy on force close'
+                'preview cleanup'
               )
           }
 
@@ -1202,9 +1260,9 @@ jobs:
           )
 
 
-          // ======================================================
-          // 9. OperationBar
-          // ======================================================
+          // ====================================================
+          // OperationBar
+          // ====================================================
 
           const opPath =
             'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
@@ -1218,45 +1276,41 @@ jobs:
             )
           ) {
             op =
-              replaceOnce(
+              mustReplace(
                 op,
 
-                `  const timer = useRef<NodeJS.Timeout>()`,
+                /const timer = useRef<NodeJS\.Timeout>\(\)/,
 
-                `  const timer = useRef<NodeJS.Timeout>()
+                `const timer = useRef<NodeJS.Timeout>()
               const liveNotifiedRef = useRef(false)`,
 
-                'live notification ref'
+                'notification ref'
               )
           }
 
-          const startRecordStart =
-            op.indexOf(
-              '  const handleStartRecord = async (isFirst = true) => {'
-            )
 
-          const playClickStart =
-            op.indexOf(
-              '  const handlePlayClick = () => {',
-              startRecordStart
-            )
+          // ----------------------------------------------------
+          // Monitor-only functions
+          // ----------------------------------------------------
 
           if (
-            startRecordStart < 0 ||
-            playClickStart < 0
+            !op.includes(
+              'const handleMonitorOnly'
+            )
           ) {
-            throw new Error(
-              'recording function block not found'
-            )
-          }
+            const marker =
+              '  const handleStartRecord = async (isFirst = true) => {'
 
-          const oldRecordBlock =
-            op.slice(
-              startRecordStart,
-              playClickStart
-            )
+            const pos =
+              op.indexOf(marker)
 
-          const monitorBlock = String.raw`
+            if (pos < 0) {
+              throw new Error(
+                'Patch target not found: handleStartRecord'
+              )
+            }
+
+            const monitorCode = `
             const scheduleMonitorOnly = () => {
               if (timer.current) {
                 clearTimeout(
@@ -1318,7 +1372,7 @@ jobs:
                       [] as string[]
                   }))
 
-              const currentStatus =
+              const latest =
                 useStreamConfigStore
                   .getState()
                   .streamConfigList
@@ -1327,18 +1381,23 @@ jobs:
                       item.id ===
                       streamConfig.id
                   )
-                  ?.status
 
               if (
-                currentStatus ===
-                StreamStatus.NOT_STARTED
+                !latest ||
+                latest.status ===
+                  StreamStatus.NOT_STARTED
               ) {
                 return
               }
 
               if (
                 result.code ===
-                SUCCESS_CODE
+                  SUCCESS_CODE &&
+                Array.isArray(
+                  result.liveUrls
+                ) &&
+                result.liveUrls.length >
+                  0
               ) {
                 if (
                   !liveNotifiedRef.current
@@ -1411,13 +1470,13 @@ jobs:
                 return
               }
 
-              const errMessage =
-                crawlerErrorCodeToI18nMessage(
-                  result.code,
-                  'error.get_line.'
-                )
-
               if (isFirst) {
+                const errMessage =
+                  crawlerErrorCodeToI18nMessage(
+                    result.code,
+                    'error.get_line.'
+                  )
+
                 toast({
                   title:
                     streamConfig.title,
@@ -1433,97 +1492,94 @@ jobs:
               scheduleMonitorOnly()
             }
 
+
           `
 
-          op =
-            op.slice(
-              0,
-              startRecordStart
-            ) +
-            monitorBlock +
-            oldRecordBlock +
-            op.slice(
-              playClickStart
-            )
+            op =
+              op.slice(
+                0,
+                pos
+              ) +
+              monitorCode +
+              op.slice(pos)
+          }
 
-          const oldPlayPause = String.raw`  const handlePlayClick = () => {
-              handleStartRecord(true)
-            }
 
-            const handlePauseClick = async () => {
-              await window.api.stopStreamRecord(streamConfig.id)
-              clearTimeout(timer.current)
-            }`
+          // ----------------------------------------------------
+          // Play / pause behavior
+          // ----------------------------------------------------
 
-          const newPlayPause = String.raw`  const handlePlayClick = () => {
-              if (
-                streamConfig.autoRecord ===
-                false
-              ) {
-                void handleMonitorOnly(
-                  true
-                )
-
-                return
-              }
-
-              void handleStartRecord(
-                true
-              )
-            }
-
-            const handlePauseClick = async () => {
-              if (timer.current) {
-                clearTimeout(
-                  timer.current
-                )
-              }
-
-              liveNotifiedRef.current =
-                false
-
-              if (
-                streamConfig.autoRecord ===
-                false
-              ) {
-                await updateStreamConfig(
-                  {
-                    ...streamConfig,
-                    status:
-                      StreamStatus.NOT_STARTED
-                  },
-
-                  streamConfig.id
-                )
-
-                return
-              }
-
-              await window.api.stopStreamRecord(
-                streamConfig.id
-              )
-            }`
+          const playPausePattern =
+            /const handlePlayClick = \(\) => \{\s*handleStartRecord\(true\)\s*\}\s*\n\s*const handlePauseClick = async \(\) => \{\s*await window\.api\.stopStreamRecord\(streamConfig\.id\)\s*clearTimeout\(timer\.current\)\s*\}/m
 
           if (
             !op.includes(
-              oldPlayPause
+              'streamConfig.autoRecord ==='
             )
           ) {
-            throw new Error(
-              'play/pause block not found'
-            )
+            op =
+              mustReplace(
+                op,
+
+                playPausePattern,
+
+                `const handlePlayClick = () => {
+                if (
+                  streamConfig.autoRecord ===
+                  false
+                ) {
+                  void handleMonitorOnly(
+                    true
+                  )
+
+                  return
+                }
+
+                void handleStartRecord(
+                  true
+                )
+              }
+
+              const handlePauseClick = async () => {
+                if (timer.current) {
+                  clearTimeout(
+                    timer.current
+                  )
+                }
+
+                liveNotifiedRef.current =
+                  false
+
+                if (
+                  streamConfig.autoRecord ===
+                  false
+                ) {
+                  await updateStreamConfig(
+                    {
+                      ...streamConfig,
+                      status:
+                        StreamStatus.NOT_STARTED
+                    },
+
+                    streamConfig.id
+                  )
+
+                  return
+                }
+
+                await window.api.stopStreamRecord(
+                  streamConfig.id
+                )
+              }`,
+
+                'play pause behavior'
+              )
           }
 
-          op =
-            op.replace(
-              oldPlayPause,
-              newPlayPause
-            )
 
-
-          // ======================================================
-          // Preview function: local proxy first
-          // ======================================================
+          // ----------------------------------------------------
+          // Local proxy preview
+          // ----------------------------------------------------
 
           const previewStart =
             op.indexOf(
@@ -1538,14 +1594,16 @@ jobs:
 
           if (
             previewStart < 0 ||
-            previewEnd < 0
+            previewEnd < 0 ||
+            previewEnd <=
+              previewStart
           ) {
             throw new Error(
-              'preview block not found'
+              'Patch target not found: preview block'
             )
           }
 
-          const newPreview = String.raw`
+          const previewCode = `
             const openPreviewStream = async (
               streamUrl: string,
               type: 'hls' | 'flv'
@@ -1665,13 +1723,13 @@ jobs:
                 const flvUrl =
                   liveUrls.find(
                     (url) =>
-                      /\.flv(?:\?|$)/i.test(
+                      /\\.flv(?:\\?|$)/i.test(
                         url
                       ) ||
                       /pull-flv/i.test(
                         url
                       ) ||
-                      /\/flv\//i.test(
+                      /\\/flv\\//i.test(
                         url
                       )
                   )
@@ -1688,13 +1746,13 @@ jobs:
                 const hlsUrl =
                   liveUrls.find(
                     (url) =>
-                      /\.m3u8(?:\?|$)/i.test(
+                      /\\.m3u8(?:\\?|$)/i.test(
                         url
                       ) ||
                       /pull-hls/i.test(
                         url
                       ) ||
-                      /\/hls\//i.test(
+                      /\\/hls\\//i.test(
                         url
                       )
                   )
@@ -1748,32 +1806,19 @@ jobs:
               0,
               previewStart
             ) +
-            newPreview +
+            previewCode +
             op.slice(
               previewEnd
             )
 
           op =
             op.replace(
-              `      onOpenChange={
-                setPreviewOpen
-              }`,
+              /onOpenChange=\{\s*setPreviewOpen\s*\}/m,
 
-              `      onOpenChange={
+              `onOpenChange={
                 handlePreviewOpenChange
               }`
             )
-
-          // Stop preview proxy when component unmounts.
-          if (
-            !op.includes(
-              'stopStreamPreview()'
-            )
-          ) {
-            throw new Error(
-              'Preview stop integration failed'
-            )
-          }
 
           write(
             opPath,
@@ -1781,22 +1826,60 @@ jobs:
           )
 
 
-          // ======================================================
-          // Final checks
-          // ======================================================
+          // ====================================================
+          // Preview player settings
+          // ====================================================
+
+          const previewPath =
+            'src/renderer/src/components/StreamPreviewDialog.tsx'
+
+          let preview =
+            read(previewPath)
+
+          preview =
+            preview.replace(
+              /\s*liveBufferLatencyChasing:\s*true,\s*\n\s*liveBufferLatencyMaxLatency:\s*3,\s*\n\s*liveBufferLatencyMinRemain:\s*0\.5\s*/m,
+              '\n'
+            )
+
+          write(
+            previewPath,
+            preview
+          )
+
+
+          // ====================================================
+          // Final validation
+          // ====================================================
+
+          const finalStore =
+            read(storePath)
 
           const finalSheet =
             read(sheetPath)
 
-          const finalOp =
-            read(opPath)
-
           const finalMain =
             read(mainPath)
 
+          const finalOp =
+            read(opPath)
+
+          const finalPreload =
+            read(preloadPath)
+
+          if (
+            !finalStore.includes(
+              'streamConfig.autoRecord = true'
+            )
+          ) {
+            throw new Error(
+              'Existing config migration missing'
+            )
+          }
+
           if (
             !finalSheet.includes(
-              `name="autoRecord"`
+              'name="autoRecord"'
             )
           ) {
             throw new Error(
@@ -1820,7 +1903,7 @@ jobs:
             )
           ) {
             throw new Error(
-              'local preview integration missing'
+              'preview proxy integration missing'
             )
           }
 
@@ -1830,7 +1913,17 @@ jobs:
             )
           ) {
             throw new Error(
-              'preview proxy IPC missing'
+              'preview proxy main process missing'
+            )
+          }
+
+          if (
+            !finalPreload.includes(
+              'stopStreamPreview'
+            )
+          ) {
+            throw new Error(
+              'preview preload API missing'
             )
           }
 
@@ -1849,48 +1942,6 @@ jobs:
           node \
             "$RUNNER_TEMP/patch-v25.cjs"
 
-      # ==========================================================
-      # Preview player stability
-      # ==========================================================
-
-      - name: Disable FLV latency chasing
-        run: |
-          node <<'NODE'
-          const fs =
-            require('fs')
-
-          const path =
-            'src/renderer/src/components/StreamPreviewDialog.tsx'
-
-          let source =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          source =
-            source.replace(
-              /,\s*liveBufferLatencyChasing:\s*true\s*,\s*liveBufferLatencyMaxLatency:\s*3\s*,\s*liveBufferLatencyMinRemain:\s*0\.5/g,
-              ''
-            )
-
-          source =
-            source.replace(
-              /\s*liveBufferLatencyChasing:\s*true,\s*/g,
-              '\n'
-            )
-
-          fs.writeFileSync(
-            path,
-            source,
-            'utf8'
-          )
-          NODE
-
-      # ==========================================================
-      # Version
-      # ==========================================================
-
       - name: Update version
         env:
           APP_VERSION: ${{ inputs.version }}
@@ -1899,16 +1950,11 @@ jobs:
             "$APP_VERSION" \
             --no-git-tag-version
 
-      # ==========================================================
-      # Source validation
-      # ==========================================================
-
       - name: Verify V2.5 changes
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
-          echo \
-            "Checking auto-record switch..."
+          echo "Checking auto-record switch..."
 
           grep -q \
             "autoRecord: boolean" \
@@ -1919,18 +1965,25 @@ jobs:
             src/renderer/src/components/StreamConfigSheet.tsx
 
           grep -q \
+            "streamConfig.autoRecord = true" \
+            src/renderer/src/store/useStreamConfigStore.ts
+
+          grep -q \
             "handleMonitorOnly" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
           grep -q \
-            "live_detected_notify" \
-            src/renderer/src/locales/locales.js
+            "showNotification" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
-          echo \
-            "Checking local preview proxy..."
+          echo "Checking local preview proxy..."
 
           grep -q \
             "startPreviewProxy" \
+            src/main/preview-proxy.ts
+
+          grep -q \
+            "127.0.0.1" \
             src/main/preview-proxy.ts
 
           grep -q \
@@ -1943,14 +1996,13 @@ jobs:
 
           grep -q \
             "startStreamPreview" \
-            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+            src/preload/index.d.ts
 
           grep -q \
-            "127.0.0.1" \
-            src/main/preview-proxy.ts
+            "startStreamPreview" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
-          echo \
-            "Checking recording quality is retained..."
+          echo "Checking V2.4 quality logic remains..."
 
           grep -q \
             "getQualityRank" \
@@ -1964,15 +2016,29 @@ jobs:
             "Douyin best stream" \
             src/main/crawler/plugins/douyin.js
 
+          echo "Checking FFmpeg..."
+
+          grep -q \
+            "audioCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "videoCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "reconnect_streamed" \
+            src/main/ffmpeg/record.ts
+
           if grep -Fq \
             "inputOptions(['-re'])" \
             src/main/ffmpeg/record.ts
           then
-            echo \
-              "ERROR: FFmpeg -re returned"
-
+            echo "ERROR: FFmpeg -re returned"
             exit 1
           fi
+
+          echo "Checking version..."
 
           node -e "
           const p =
@@ -1999,10 +2065,6 @@ jobs:
           echo \
             "All V2.5 source checks passed."
 
-      # ==========================================================
-      # Compile checks
-      # ==========================================================
-
       - name: TypeScript check
         run: |
           npm run typecheck
@@ -2010,10 +2072,6 @@ jobs:
       - name: Build Electron app
         run: |
           npm run build
-
-      # ==========================================================
-      # Windows package
-      # ==========================================================
 
       - name: Package Windows x64
         run: |
@@ -2052,15 +2110,14 @@ jobs:
               "Windows x64 installer not generated."
           }
 
+          Write-Host `
+            "Generated installer:"
+
           $installers |
             Select-Object `
               Name,
               Length,
               FullName
-
-      # ==========================================================
-      # Save test branch
-      # ==========================================================
 
       - name: Commit V2.5 tested source
         run: |
@@ -2093,7 +2150,7 @@ jobs:
               "No source changes to commit."
           else
             git commit \
-              -m "Add local stream preview proxy and notify-only monitoring"
+              -m "Add local preview proxy and notify-only monitoring"
           fi
 
           git push \
@@ -2121,20 +2178,18 @@ jobs:
             echo
             echo "Branch: \`douyin-v2.5-test\`"
             echo
-            echo "Changes:"
+            echo "Included:"
             echo
-            echo "- Added per-stream automatic recording switch"
-            echo "- Auto record ON: monitor then record normally"
-            echo "- Auto record OFF: monitor and notify only"
-            echo "- Windows notification when streamer goes live"
-            echo "- Xizhi notification retained"
-            echo "- Existing configs default to auto record ON"
-            echo "- Added localhost preview proxy"
-            echo "- Preview proxy carries Referer / User-Agent / login cookie"
-            echo "- FLV preview uses localhost proxy"
-            echo "- HLS playlists and segments use localhost proxy"
-            echo "- Removed FLV latency-chasing setting"
-            echo "- V2.4 highest-quality recording logic retained"
-            echo "- Recording audio/video copy retained"
+            echo "- Localhost live preview proxy"
+            echo "- Douyin Referer and login cookie forwarded by main process"
+            echo "- HLS playlist URL rewriting"
+            echo "- FLV localhost streaming"
+            echo "- Auto recording switch for each streamer"
+            echo "- Auto record OFF = monitor and notify only"
+            echo "- Windows notification on going live"
+            echo "- Xizhi push retained"
+            echo "- Existing stream configs default to auto record ON"
+            echo "- V2.4 highest-quality selection retained"
+            echo "- Audio and video stream-copy retained"
             echo "- Windows x64 test installer"
           } >> "$GITHUB_STEP_SUMMARY"
