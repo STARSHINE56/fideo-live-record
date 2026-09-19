@@ -1,347 +1,181 @@
-name: Douyin V2.7 UI Cleanup Stable
+name: Douyin V2.7 Cleanup
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "测试版本号"
+        description: Version
         required: true
         default: "1.1.8"
-        type: string
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Remove Preview And Build V2.7
     runs-on: windows-latest
     timeout-minutes: 45
 
-    defaults:
-      run:
-        shell: bash
-
     steps:
-      - name: Checkout V2.6.2
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: douyin-v2.6.2-test
           fetch-depth: 0
 
-      - name: Create V2.7 branch
+      - name: Create test branch
+        shell: bash
         run: |
           git switch -C douyin-v2.7-ui-test
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20.15.0"
           cache: npm
 
       - name: Install dependencies
-        run: |
-          npm ci
+        shell: bash
+        run: npm ci
 
-      # ============================================================
-      # 删除 Main 预览功能
-      # 注意：先找 IPC，再删 import
-      # ============================================================
-
-      - name: Remove main preview code safely
+      - name: Remove preview feature
+        shell: bash
         run: |
-          cat > "$RUNNER_TEMP/remove-main-preview.cjs" <<'NODE'
+          node <<'NODE'
           const fs = require('fs')
 
-          const path =
-            'src/main/index.ts'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          // ======================================================
-          // 1. 先定位真正的 Preview IPC
-          // 此时绝对不能先删除 START_STREAM_PREVIEW import
-          // ======================================================
-
-          const navMarker =
-            'ipcMain.handle(NAV_BY_DEFAULT_BROWSER'
-
-          const navIndex =
-            text.indexOf(
-              navMarker
-            )
-
-          if (
-            navIndex < 0
-          ) {
-            throw new Error(
-              'NAV_BY_DEFAULT_BROWSER handler not found'
-            )
+          function read(path) {
+            return fs.readFileSync(path, 'utf8')
           }
 
-          const previewMarkerIndex =
-            text.indexOf(
-              'START_STREAM_PREVIEW',
-              navIndex
-            )
-
-          if (
-            previewMarkerIndex < 0
-          ) {
-            throw new Error(
-              'START_STREAM_PREVIEW handler not found'
-            )
+          function write(path, text) {
+            fs.writeFileSync(path, text, 'utf8')
           }
 
-          const previewStart =
-            text.lastIndexOf(
-              'ipcMain.handle',
-              previewMarkerIndex
-            )
-
-          const recordMarkerIndex =
-            text.indexOf(
-              'START_STREAM_RECORD',
-              previewMarkerIndex
-            )
-
-          if (
-            recordMarkerIndex < 0
-          ) {
-            throw new Error(
-              'START_STREAM_RECORD handler not found'
-            )
-          }
-
-          const recordStart =
-            text.lastIndexOf(
-              'ipcMain.handle',
-              recordMarkerIndex
-            )
-
-          if (
-            previewStart < 0 ||
-            recordStart <=
-              previewStart
-          ) {
-            throw new Error(
-              'Invalid preview IPC boundary'
-            )
-          }
-
-          console.log(
-            'Preview IPC range:',
-            previewStart,
-            recordStart
-          )
-
-          // 从 START_STREAM_PREVIEW handler
-          // 一直删到 START_STREAM_RECORD handler 前
-          text =
-            text.slice(
-              0,
-              previewStart
-            ) +
-            text.slice(
-              recordStart
-            )
-
-          // ======================================================
-          // 2. 删除 preview-transcoder import
-          // 正则只允许精确匹配两个指定函数
-          // 不再使用 [\s\S]* 这种危险写法
-          // ======================================================
-
-          text =
-            text.replace(
-              /import\s*\{\s*startPreviewTranscoder\s*,\s*stopPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*/g,
-              ''
-            )
-
-          text =
-            text.replace(
-              /import\s*\{\s*stopPreviewTranscoder\s*,\s*startPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*/g,
-              ''
-            )
-
-          // ======================================================
-          // 3. 再删除 constants import
-          // ======================================================
-
-          text =
-            text
-              .split(
-                /\r?\n/
-              )
-              .filter(
-                (
-                  line
-                ) => {
-                  const value =
-                    line.trim()
-
-                  return (
-                    value !==
-                      'START_STREAM_PREVIEW,' &&
-                    value !==
-                      'STOP_STREAM_PREVIEW,'
-                  )
-                }
-              )
-              .join(
-                '\n'
-              )
-
-          // ======================================================
-          // 4. 删除 FORCE_CLOSE 中可能存在的残留调用
-          // ======================================================
-
-          text =
-            text
-              .split(
-                /\r?\n/
-              )
-              .filter(
-                (
-                  line
-                ) =>
-                  !line.includes(
-                    'stopPreviewTranscoder()'
-                  )
-              )
-              .join(
-                '\n'
-              )
-
-          fs.writeFileSync(
-            path,
-            text,
-            'utf8'
-          )
-
-          console.log(
-            'Main preview code removed.'
-          )
-          NODE
-
-          node \
-            "$RUNNER_TEMP/remove-main-preview.cjs"
-
-      # ============================================================
-      # 删除 const
-      # ============================================================
-
-      - name: Remove preview constants
-        run: |
-          node - <<'NODE'
-          const fs =
-            require('fs')
-
-          const path =
-            'src/const.ts'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          text =
-            text
-              .split(/\r?\n/)
-              .filter(
-                (
-                  line
-                ) =>
-                  !line.includes(
-                    'START_STREAM_PREVIEW'
-                  ) &&
-                  !line.includes(
-                    'STOP_STREAM_PREVIEW'
-                  )
-              )
-              .join('\n')
-
-          fs.writeFileSync(
-            path,
-            text,
-            'utf8'
-          )
-          NODE
-
-      # ============================================================
-      # 删除 preload preview API
-      # ============================================================
-
-      - name: Remove preload preview API
-        run: |
-          cat > "$RUNNER_TEMP/remove-preload.cjs" <<'NODE'
-          const fs =
-            require('fs')
-
-          // ======================================================
-          // preload/index.ts
-          // ======================================================
+          // ==================================================
+          // main/index.ts
+          // ==================================================
 
           {
-            const path =
-              'src/preload/index.ts'
+            const path = 'src/main/index.ts'
+            let text = read(path)
 
-            let text =
-              fs.readFileSync(
-                path,
-                'utf8'
-              )
+            const nav = text.indexOf(
+              'ipcMain.handle(NAV_BY_DEFAULT_BROWSER'
+            )
 
-            const start =
-              text.indexOf(
-                'startStreamPreview:'
-              )
+            const previewMarker = text.indexOf(
+              'START_STREAM_PREVIEW',
+              nav
+            )
+
+            const recordMarker = text.indexOf(
+              'START_STREAM_RECORD',
+              previewMarker
+            )
+
+            const previewStart = text.lastIndexOf(
+              'ipcMain.handle',
+              previewMarker
+            )
+
+            const recordStart = text.lastIndexOf(
+              'ipcMain.handle',
+              recordMarker
+            )
 
             if (
-              start >= 0
+              nav < 0 ||
+              previewMarker < 0 ||
+              recordMarker < 0 ||
+              previewStart < 0 ||
+              recordStart <= previewStart
             ) {
-              const end =
-                text.indexOf(
-                  'navByDefaultBrowser:',
-                  start
-                )
-
-              if (
-                end < 0
-              ) {
-                throw new Error(
-                  'Unable to locate preload preview API end'
-                )
-              }
-
-              const lineStart =
-                text.lastIndexOf(
-                  '\n',
-                  start
-                ) + 1
-
-              text =
-                text.slice(
-                  0,
-                  lineStart
-                ) +
-                text.slice(
-                  end
-                )
+              throw new Error(
+                'Unable to locate preview IPC block'
+              )
             }
 
             text =
-              text
+              text.slice(0, previewStart) +
+              text.slice(recordStart)
+
+            const lines = text.split(/\r?\n/)
+            const result = []
+
+            let skippingPreviewImport = false
+
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i]
+
+              if (
+                !skippingPreviewImport &&
+                line.trim() === 'import {'
+              ) {
+                const next =
+                  lines
+                    .slice(i, i + 6)
+                    .join('\n')
+
+                if (
+                  next.includes('startPreviewTranscoder') &&
+                  next.includes('preview-transcoder')
+                ) {
+                  skippingPreviewImport = true
+                  continue
+                }
+              }
+
+              if (skippingPreviewImport) {
+                if (
+                  line.includes(
+                    "from './preview-transcoder'"
+                  )
+                ) {
+                  skippingPreviewImport = false
+                }
+
+                continue
+              }
+
+              const trimmed = line.trim()
+
+              if (
+                trimmed === 'START_STREAM_PREVIEW,' ||
+                trimmed === 'STOP_STREAM_PREVIEW,'
+              ) {
+                continue
+              }
+
+              if (
+                line.includes(
+                  'stopPreviewTranscoder()'
+                )
+              ) {
+                continue
+              }
+
+              result.push(line)
+            }
+
+            write(
+              path,
+              result.join('\n')
+            )
+          }
+
+          // ==================================================
+          // const.ts
+          // ==================================================
+
+          {
+            const path = 'src/const.ts'
+
+            const text =
+              read(path)
                 .split(/\r?\n/)
                 .filter(
-                  (
-                    line
-                  ) =>
+                  line =>
                     !line.includes(
                       'START_STREAM_PREVIEW'
                     ) &&
@@ -351,46 +185,32 @@ jobs:
                 )
                 .join('\n')
 
-            fs.writeFileSync(
-              path,
-              text,
-              'utf8'
-            )
+            write(path, text)
           }
 
-          // ======================================================
-          // preload/index.d.ts
-          // ======================================================
+          // ==================================================
+          // preload/index.ts
+          // ==================================================
 
           {
-            const path =
-              'src/preload/index.d.ts'
-
-            let text =
-              fs.readFileSync(
-                path,
-                'utf8'
-              )
+            const path = 'src/preload/index.ts'
+            let text = read(path)
 
             const start =
               text.indexOf(
                 'startStreamPreview:'
               )
 
-            if (
-              start >= 0
-            ) {
+            if (start >= 0) {
               const end =
                 text.indexOf(
-                  'startStreamRecord:',
+                  'navByDefaultBrowser:',
                   start
                 )
 
-              if (
-                end < 0
-              ) {
+              if (end < 0) {
                 throw new Error(
-                  'Unable to locate preload preview type end'
+                  'Unable to remove preload preview'
                 )
               }
 
@@ -401,310 +221,230 @@ jobs:
                 ) + 1
 
               text =
-                text.slice(
-                  0,
-                  lineStart
-                ) +
-                text.slice(
-                  end
-                )
+                text.slice(0, lineStart) +
+                text.slice(end)
             }
 
-            fs.writeFileSync(
-              path,
-              text,
-              'utf8'
-            )
+            text =
+              text
+                .split(/\r?\n/)
+                .filter(
+                  line =>
+                    !line.includes(
+                      'START_STREAM_PREVIEW'
+                    ) &&
+                    !line.includes(
+                      'STOP_STREAM_PREVIEW'
+                    )
+                )
+                .join('\n')
+
+            write(path, text)
           }
 
-          console.log(
-            'Preload preview API removed.'
-          )
-          NODE
+          // ==================================================
+          // preload/index.d.ts
+          // ==================================================
 
-          node \
-            "$RUNNER_TEMP/remove-preload.cjs"
+          {
+            const path = 'src/preload/index.d.ts'
+            let text = read(path)
 
-      # ============================================================
-      # 删除 OperationBar 预览
-      # 根据当前实际源码精确删除
-      # ============================================================
-
-      - name: Remove preview from operation bar
-        run: |
-          cat > "$RUNNER_TEMP/remove-operation-preview.cjs" <<'NODE'
-          const fs =
-            require('fs')
-
-          const path =
-            'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          // imports
-          text =
-            text
-              .split(/\r?\n/)
-              .filter(
-                (
-                  line
-                ) =>
-                  !line.includes(
-                    'StreamPreviewDialog'
-                  ) &&
-                  !line.includes(
-                    'darkPreviewIcon'
-                  ) &&
-                  !line.includes(
-                    'lightPreviewIcon'
-                  )
+            const start =
+              text.indexOf(
+                'startStreamPreview:'
               )
-              .join('\n')
 
-          // errorCodeToI18nMessage 只被 preview 使用
-          text =
-            text.replace(
+            if (start >= 0) {
+              const end =
+                text.indexOf(
+                  'startStreamRecord:',
+                  start
+                )
+
+              if (end < 0) {
+                throw new Error(
+                  'Unable to remove preview types'
+                )
+              }
+
+              const lineStart =
+                text.lastIndexOf(
+                  '\n',
+                  start
+                ) + 1
+
+              text =
+                text.slice(0, lineStart) +
+                text.slice(end)
+            }
+
+            write(path, text)
+          }
+
+          // ==================================================
+          // OperationBar.tsx
+          // ==================================================
+
+          {
+            const path =
+              'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
+
+            let text = read(path)
+
+            text =
+              text
+                .split(/\r?\n/)
+                .filter(line => {
+                  return (
+                    !line.includes(
+                      'StreamPreviewDialog'
+                    ) &&
+                    !line.includes(
+                      'darkPreviewIcon'
+                    ) &&
+                    !line.includes(
+                      'lightPreviewIcon'
+                    ) &&
+                    !line.includes(
+                      '[isLoadingPreview'
+                    ) &&
+                    !line.includes(
+                      '[previewOpen'
+                    ) &&
+                    !line.includes(
+                      '[previewUrl'
+                    ) &&
+                    !line.includes(
+                      '[previewType'
+                    )
+                  )
+                })
+                .join('\n')
+
+            text = text.replace(
               /\s*errorCodeToI18nMessage,?/,
               ''
             )
 
-          // states
-          text =
-            text
-              .split(/\r?\n/)
-              .filter(
-                (
-                  line
-                ) =>
-                  !line.includes(
-                    '[isLoadingPreview'
-                  ) &&
-                  !line.includes(
-                    '[previewOpen'
-                  ) &&
-                  !line.includes(
-                    '[previewUrl'
-                  ) &&
-                  !line.includes(
-                    '[previewType'
-                  )
-              )
-              .join('\n')
-
-          // ======================================================
-          // 删除预览函数块
-          // handlePreviewOpenChange -> 下一个 useEffect
-          // ======================================================
-
-          const previewFunctionStart =
-            text.indexOf(
-              '  const handlePreviewOpenChange'
-            )
-
-          if (
-            previewFunctionStart >= 0
-          ) {
-            const nextEffect =
+            const previewFunctions =
               text.indexOf(
-                '  useEffect(() => {',
-                previewFunctionStart
+                '  const handlePreviewOpenChange'
               )
 
-            if (
-              nextEffect < 0
-            ) {
-              throw new Error(
-                'Unable to locate end of preview functions'
+            if (previewFunctions >= 0) {
+              const nextEffect =
+                text.indexOf(
+                  '  useEffect(() => {',
+                  previewFunctions
+                )
+
+              if (nextEffect < 0) {
+                throw new Error(
+                  'Preview function end not found'
+                )
+              }
+
+              text =
+                text.slice(
+                  0,
+                  previewFunctions
+                ) +
+                text.slice(nextEffect)
+            }
+
+            const previewButton =
+              text.indexOf(
+                '        {!isLoadingPreview && ('
               )
+
+            if (previewButton >= 0) {
+              const statusButton =
+                text.indexOf(
+                  '        {streamConfig.status === StreamStatus.NOT_STARTED ? (',
+                  previewButton
+                )
+
+              if (statusButton < 0) {
+                throw new Error(
+                  'Status button not found'
+                )
+              }
+
+              text =
+                text.slice(
+                  0,
+                  previewButton
+                ) +
+                text.slice(
+                  statusButton
+                )
+            }
+
+            const previewDialog =
+              text.indexOf(
+                '      <StreamPreviewDialog'
+              )
+
+            if (previewDialog >= 0) {
+              const configSheet =
+                text.indexOf(
+                  '<StreamConfigSheet',
+                  previewDialog
+                )
+
+              if (configSheet < 0) {
+                throw new Error(
+                  'Config sheet not found'
+                )
+              }
+
+              text =
+                text.slice(
+                  0,
+                  previewDialog
+                ) +
+                '      ' +
+                text.slice(
+                  configSheet
+                )
             }
 
             text =
-              text.slice(
-                0,
-                previewFunctionStart
-              ) +
-              text.slice(
-                nextEffect
+              text.replace(
+                'className="flex absolute right-0 gap-2"',
+                'className="flex shrink-0 items-center gap-2 rounded-lg border bg-background p-1.5 shadow-sm"'
               )
+
+            write(path, text)
           }
-
-          // ======================================================
-          // 删除预览按钮
-          // preview loading block -> status button
-          // ======================================================
-
-          const previewButtonStart =
-            text.indexOf(
-              '        {!isLoadingPreview && ('
-            )
-
-          if (
-            previewButtonStart >= 0
-          ) {
-            const statusButtonStart =
-              text.indexOf(
-                '        {streamConfig.status === StreamStatus.NOT_STARTED ? (',
-                previewButtonStart
-              )
-
-            if (
-              statusButtonStart < 0
-            ) {
-              throw new Error(
-                'Unable to locate status button after preview'
-              )
-            }
-
-            text =
-              text.slice(
-                0,
-                previewButtonStart
-              ) +
-              text.slice(
-                statusButtonStart
-              )
-          }
-
-          // ======================================================
-          // 删除 StreamPreviewDialog JSX
-          // ======================================================
-
-          const dialogStart =
-            text.indexOf(
-              '      <StreamPreviewDialog'
-            )
-
-          if (
-            dialogStart >= 0
-          ) {
-            const sheetStart =
-              text.indexOf(
-                '    <StreamConfigSheet',
-                dialogStart
-              )
-
-            if (
-              sheetStart < 0
-            ) {
-              throw new Error(
-                'Unable to locate StreamConfigSheet after preview dialog'
-              )
-            }
-
-            text =
-              text.slice(
-                0,
-                dialogStart
-              ) +
-              text.slice(
-                sheetStart
-              )
-          }
-
-          // ======================================================
-          // UI：操作按钮不再 absolute，避免跟标题重叠
-          // ======================================================
-
-          text =
-            text.replace(
-              'className="flex absolute right-0 gap-2"',
-              'className="flex shrink-0 items-center gap-2 rounded-lg border bg-background/80 p-1.5 shadow-sm"'
-            )
-
-          // UNKNOWN_CODE 不应重置开播通知 latch
-          text =
-            text.replace(
-              `if (
-      result.code ===
-        CRAWLER_ERROR_CODE.NOT_URLS ||
-      result.code ===
-        UNKNOWN_CODE
-    ) {
-      liveNotifiedRef.current =
-        false
-
-      scheduleMonitorOnly()
-
-      return
-    }`,
-              `if (
-      result.code ===
-        CRAWLER_ERROR_CODE.NOT_URLS
-    ) {
-      liveNotifiedRef.current =
-        false
-
-      scheduleMonitorOnly()
-
-      return
-    }
-
-    if (
-      result.code ===
-        UNKNOWN_CODE
-    ) {
-      scheduleMonitorOnly()
-
-      return
-    }`
-            )
-
-          fs.writeFileSync(
-            path,
-            text,
-            'utf8'
-          )
 
           console.log(
-            'Renderer preview code removed.'
+            'Preview removal finished.'
           )
           NODE
 
-          node \
-            "$RUNNER_TEMP/remove-operation-preview.cjs"
-
-      # ============================================================
-      # 删除预览文件
-      # ============================================================
-
       - name: Remove preview files
+        shell: bash
         run: |
-          rm -f \
-            src/main/preview-transcoder.ts \
-            src/main/preview-proxy.ts \
-            src/renderer/src/components/StreamPreviewDialog.tsx \
-            src/renderer/src/assets/images/dark/preview.svg \
-            src/renderer/src/assets/images/light/preview.svg
-
-      # ============================================================
-      # 删除预览依赖
-      # ============================================================
+          rm -f src/main/preview-transcoder.ts
+          rm -f src/main/preview-proxy.ts
+          rm -f src/renderer/src/components/StreamPreviewDialog.tsx
+          rm -f src/renderer/src/assets/images/dark/preview.svg
+          rm -f src/renderer/src/assets/images/light/preview.svg
 
       - name: Remove preview dependencies
+        shell: bash
         run: |
-          npm uninstall \
-            hls.js \
-            mpegts.js
+          npm uninstall hls.js mpegts.js
 
-      # ============================================================
-      # UI 安全优化
-      # 不重写业务核心
-      # ============================================================
-
-      - name: Optimize safe UI layout
+      - name: Optimize layout
+        shell: bash
         run: |
-          cat > "$RUNNER_TEMP/ui.cjs" <<'NODE'
-          const fs =
-            require('fs')
+          node <<'NODE'
+          const fs = require('fs')
 
-          function update(
-            path,
-            fn
-          ) {
+          function replace(path, before, after) {
             let text =
               fs.readFileSync(
                 path,
@@ -712,7 +452,10 @@ jobs:
               )
 
             text =
-              fn(text)
+              text.replace(
+                before,
+                after
+              )
 
             fs.writeFileSync(
               path,
@@ -721,270 +464,79 @@ jobs:
             )
           }
 
-          // 主任务列表
-          update(
+          replace(
             'src/renderer/src/components/StreamConfigList/StreamConfigList.tsx',
 
-            (
-              text
-            ) =>
-              text.replace(
-                'show-scrollbar flex flex-col gap-[12px] p-[24px] overflow-y-auto h-[calc(100vh-80px)]',
+            'show-scrollbar flex flex-col gap-[12px] p-[24px] overflow-y-auto h-[calc(100vh-80px)]',
 
-                'show-scrollbar mx-auto flex h-[calc(100vh-80px)] w-full max-w-[1100px] flex-col gap-3 overflow-y-auto px-5 py-4'
-              )
+            'show-scrollbar mx-auto flex h-[calc(100vh-80px)] w-full max-w-[1100px] flex-col gap-3 overflow-y-auto px-5 py-4'
           )
 
-          // 任务卡片
-          update(
-            'src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx',
-
-            (
-              text
-            ) =>
-              text.replace(
-                '<Card>',
-                '<Card className="overflow-hidden border bg-card shadow-sm transition-shadow hover:shadow-md">'
-              )
-          )
-
-          // 创建 / 编辑面板
-          update(
+          replace(
             'src/renderer/src/components/StreamConfigSheet.tsx',
 
-            (
-              text
-            ) =>
-              text
-                .replace(
-                  'form className="space-y-8"',
-                  'form className="space-y-5"'
-                )
-                .replace(
-                  'SheetContent className="flex flex-col"',
-                  'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
-                )
+            'form className="space-y-8"',
+
+            'form className="space-y-5"'
           )
 
-          // 设置面板
-          update(
+          replace(
             'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx',
 
-            (
-              text
-            ) =>
-              text
-                .replace(
-                  'form className="space-y-8"',
-                  'form className="space-y-5"'
-                )
-                .replace(
-                  'SheetContent className="flex flex-col"',
-                  'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
-                )
+            'form className="space-y-8"',
+
+            'form className="space-y-5"'
           )
 
           console.log(
-            'Safe UI layout optimization complete.'
+            'Layout optimization finished.'
           )
           NODE
-
-          node "$RUNNER_TEMP/ui.cjs"
-
-      # ============================================================
-      # CSP 恢复
-      # ============================================================
-
-      - name: Restore renderer CSP
-        run: |
-          node - <<'NODE'
-          const fs =
-            require('fs')
-
-          const path =
-            'src/renderer/index.html'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          text =
-            text.replace(
-              /content="default-src[^"]+"/,
-
-              `content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://api.xunhupay.com; connect-src 'self' https://xizhi.qqoq.net https:;"`
-            )
-
-          fs.writeFileSync(
-            path,
-            text,
-            'utf8'
-          )
-          NODE
-
-      # ============================================================
-      # 版本
-      # ============================================================
 
       - name: Update version
+        shell: bash
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
-          npm version \
-            "$APP_VERSION" \
-            --no-git-tag-version
+          npm version "$APP_VERSION" --no-git-tag-version
 
-      # ============================================================
-      # 检查：预览必须彻底消失
-      # ============================================================
-
-      - name: Verify preview removed
+      - name: Verify removal
+        shell: bash
         run: |
-          leftovers="$(
-            grep -R \
-              -n \
-              -E \
-              "START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|stopStreamPreview|startPreviewTranscoder|stopPreviewTranscoder|StreamPreviewDialog|darkPreviewIcon|lightPreviewIcon|preview-transcoder|preview-proxy" \
-              src \
-              || true
-          )"
+          LEFTOVERS="$(grep -R -n -E \
+          'START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|stopStreamPreview|startPreviewTranscoder|stopPreviewTranscoder|StreamPreviewDialog|darkPreviewIcon|lightPreviewIcon|preview-transcoder|preview-proxy' \
+          src || true)"
 
-          if [ -n "$leftovers" ]
-          then
-            echo "$leftovers"
-            echo "Preview leftovers found."
+          if [ -n "$LEFTOVERS" ]; then
+            echo "$LEFTOVERS"
             exit 1
           fi
 
-          node - <<'NODE'
-          const pkg =
-            require('./package.json')
+          echo "Preview removed."
 
-          if (
-            pkg.dependencies?.['hls.js']
-          ) {
-            throw new Error(
-              'hls.js still exists'
-            )
-          }
-
-          if (
-            pkg.dependencies?.['mpegts.js']
-          ) {
-            throw new Error(
-              'mpegts.js still exists'
-            )
-          }
-
-          console.log(
-            'Preview fully removed.'
-          )
-          NODE
-
-      # ============================================================
-      # 检查 Main 核心 imports
-      # 防止再次误删
-      # ============================================================
-
-      - name: Verify main core intact
+      - name: Verify core files
+        shell: bash
         run: |
-          node - <<'NODE'
-          const fs =
-            require('fs')
-
-          const text =
-            fs.readFileSync(
-              'src/main/index.ts',
-              'utf8'
-            )
-
-          const required = [
-            "from 'electron'",
-            'app,',
-            'BrowserWindow',
-            'ipcMain',
-            'RETRY_DOWNLOAD_DEP',
-            'START_STREAM_RECORD',
-            'recordStreamFfmpegProcessMap',
-            'killRecordStreamFfmpegProcess',
-            'downloadReq',
-            'startFrpcProcess',
-            'stopFrpc'
-          ]
-
-          for (
-            const item of required
-          ) {
-            if (
-              !text.includes(
-                item
-              )
-            ) {
-              throw new Error(
-                'Missing required main code: ' +
-                item
-              )
-            }
-          }
-
-          console.log(
-            'Main process core intact.'
-          )
-          NODE
-
-      # ============================================================
-      # 检查已有功能
-      # ============================================================
-
-      - name: Verify existing features
-        run: |
-          grep -q \
-            "handleMonitorOnly" \
-            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
-
-          grep -q \
-            "autoRecord: boolean" \
-            type.d.ts
-
-          grep -q \
-            "getQualityRank" \
-            src/main/crawler/plugins/douyin.js
-
-          grep -q \
-            "candidate_resolution" \
-            src/main/crawler/plugins/douyin.js
-
-          grep -q \
-            "videoCodec('copy')" \
-            src/main/ffmpeg/record.ts
-
-          grep -q \
-            "audioCodec('copy')" \
-            src/main/ffmpeg/record.ts
-
-      # ============================================================
-      # TypeScript
-      # ============================================================
+          grep -q "ipcMain" src/main/index.ts
+          grep -q "BrowserWindow" src/main/index.ts
+          grep -q "START_STREAM_RECORD" src/main/index.ts
+          grep -q "recordStreamFfmpegProcessMap" src/main/index.ts
+          grep -q "downloadReq" src/main/index.ts
+          grep -q "videoCodec('copy')" src/main/ffmpeg/record.ts
+          grep -q "audioCodec('copy')" src/main/ffmpeg/record.ts
+          grep -q "getQualityRank" src/main/crawler/plugins/douyin.js
+          grep -q "autoRecord: boolean" type.d.ts
 
       - name: TypeScript check
-        run: |
-          npm run typecheck
+        shell: bash
+        run: npm run typecheck
 
-      # ============================================================
-      # Build
-      # ============================================================
+      - name: Build
+        shell: bash
+        run: npm run build
 
-      - name: Build Electron app
-        run: |
-          npm run build
-
-      # ============================================================
-      # Windows x64
-      # ============================================================
-
-      - name: Package Windows x64
+      - name: Package Windows
+        shell: bash
         run: |
           npx electron-builder \
             --win \
@@ -992,84 +544,40 @@ jobs:
             --x64 \
             --publish never
 
-      - name: Verify Windows installer
+      - name: Verify installer
         shell: pwsh
-        env:
-          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
-          $package = Get-Content package.json | ConvertFrom-Json
+          $files = Get-ChildItem -Path dist -Filter "*-x64.exe"
 
-          if ($package.version -ne $env:EXPECTED_VERSION) {
-            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+          if (-not $files) {
+            throw "Installer not found"
           }
 
-          $installers = Get-ChildItem -Path dist -Filter "*-x64.exe"
-
-          if (-not $installers -or $installers.Count -eq 0) {
-            throw "Windows x64 installer not generated."
-          }
-
-          Write-Host "Generated installer:"
-
-          $installers |
-            Select-Object Name, Length, FullName |
+          $files |
+            Select-Object Name, Length |
             Format-Table -AutoSize
 
-      # ============================================================
-      # 编译成功后再提交
-      # ============================================================
-
-      - name: Commit V2.7
+      - name: Commit test branch
+        shell: bash
         run: |
-          git config \
-            user.name \
-            "github-actions[bot]"
-
-          git config \
-            user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add -A
 
-          if git diff --cached --quiet
-          then
-            echo "No source changes."
-          else
-            git commit \
-              -m "Remove broken preview and stabilize V2.7 UI"
-          fi
+          git commit \
+            -m "Remove preview and clean V2.7 UI" \
+            || true
 
           git push \
             --force \
             origin \
             douyin-v2.7-ui-test
 
-      - name: Upload Windows installer
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: fideo-${{ inputs.version }}-douyin-v2.7-ui-windows-x64
+          name: fideo-${{ inputs.version }}-v2.7-windows-x64
           path: dist/*-x64.exe
           if-no-files-found: error
           retention-days: 7
-
-      - name: Build summary
-        if: always()
-        env:
-          APP_VERSION: ${{ inputs.version }}
-        run: |
-          {
-            echo "# Fideo V2.7"
-            echo
-            echo "Version: \`$APP_VERSION\`"
-            echo
-            echo "Branch: \`douyin-v2.7-ui-test\`"
-            echo
-            echo "- Broken preview removed"
-            echo "- Preview dependencies removed"
-            echo "- Core imports protected"
-            echo "- Notify-only monitoring retained"
-            echo "- Auto record retained"
-            echo "- Douyin quality logic retained"
-            echo "- Recording stream-copy retained"
-            echo "- UI spacing optimized"
-          } >> "$GITHUB_STEP_SUMMARY"
