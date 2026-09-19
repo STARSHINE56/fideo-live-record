@@ -1,111 +1,501 @@
-name: Build and Release fideo
+name: Release Fideo V2.8
 
 on:
-  push:
-    branches:
-      - release
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "正式版本号，例如 1.1.9"
+        required: true
+        default: "1.1.9"
+        type: string
+
+permissions:
+  contents: write
+
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest, windows-latest]
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install dependencies
-      run: npm install
-
-    - name: Get version from package.json
-      id: get_version
-      run: echo "VERSION=$(node -p -e "require('./package.json').version")" >> $GITHUB_ENV
-      shell: bash
-
-    - name: Build Electron App
-      run: |
-        if [ "${{ runner.os }}" == "Windows" ]; then
-          npm run build:win
-        elif [ "${{ runner.os }}" == "macOS" ]; then
-          npm run build:mac
-        fi
-      shell: bash
-
-    - name: Upload Windows build artifact (x64)
-      if: ${{ runner.os == 'Windows' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-win-x64-${{ env.VERSION }}
-        path: dist/fideo-${{ env.VERSION }}-x64.exe
-
-    - name: Upload Windows build artifact (arm64)
-      if: ${{ runner.os == 'Windows' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-win-arm64-${{ env.VERSION }}
-        path: dist/fideo-${{ env.VERSION }}-arm64.exe
-
-    - name: Upload macOS build artifacts (x64)
-      if: ${{ runner.os == 'macOS' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-mac-x64-${{ env.VERSION }}
-        path: dist/fideo-${{ env.VERSION }}-x64.dmg
-
-    - name: Upload macOS build artifacts (arm)
-      if: ${{ runner.os == 'macOS' }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-mac-arm-${{ env.VERSION }}
-        path: dist/fideo-${{ env.VERSION }}-arm64.dmg
-
   release:
-    needs: build
-    runs-on: ubuntu-latest
+    name: Build and Release Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      # ============================================================
+      # 1. 使用已经测试通过的 V2.8
+      # ============================================================
 
-    - name: Get version from package.json
-      id: get_version
-      run: echo "VERSION=$(node -p -e "require('./package.json').version")" >> $GITHUB_ENV
+      - name: Checkout tested V2.8
+        uses: actions/checkout@v4
+        with:
+          ref: douyin-v2.8-anchor-monitor-test
+          fetch-depth: 0
 
-    - name: Download Windows build artifact (x64)
-      uses: actions/download-artifact@v4
-      with:
-        name: build-win-x64-${{ env.VERSION }}
-        path: .
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
 
-    - name: Download Windows build artifact (arm64)
-      uses: actions/download-artifact@v4
-      with:
-        name: build-win-arm64-${{ env.VERSION }}
-        path: .
+      - name: Install dependencies
+        run: |
+          npm ci
 
-    - name: Download macOS build artifacts (x64)
-      uses: actions/download-artifact@v4
-      with:
-        name: build-mac-x64-${{ env.VERSION }}
-        path: .
+      # ============================================================
+      # 2. 检查正式版本号
+      # ============================================================
 
-    - name: Download macOS build artifacts (arm)
-      uses: actions/download-artifact@v4
-      with:
-        name: build-mac-arm-${{ env.VERSION }}
-        path: .
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          then
+            echo "Invalid version: $VERSION"
+            echo "Use format such as 1.1.9"
+            exit 1
+          fi
 
-    - name: Upload Release Asset
-      uses: softprops/action-gh-release@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-      with:
-        files: |
-          fideo-${{ env.VERSION }}-x64.dmg
-          fideo-${{ env.VERSION }}-arm64.dmg
-          fideo-${{ env.VERSION }}-x64.exe
-          fideo-${{ env.VERSION }}-arm64.exe
-        tag_name: v${{ env.VERSION }}
+          echo "Release version: $VERSION"
+
+      # ============================================================
+      # 3. 第三方 MIT 许可证声明
+      # ============================================================
+
+      - name: Add third party notices
+        run: |
+          cat > THIRD_PARTY_NOTICES.md <<'NOTICE'
+          # Third-Party Notices
+
+          This project contains or adapts portions of third-party open-source software.
+
+          ## streamget
+
+          Project:
+          https://github.com/ihmily/streamget
+
+          Copyright (c) 2025 Hmily
+
+          Licensed under the MIT License.
+
+          MIT License
+
+          Copyright (c) 2025 Hmily
+
+          Permission is hereby granted, free of charge, to any person obtaining a copy
+          of this software and associated documentation files (the "Software"), to deal
+          in the Software without restriction, including without limitation the rights
+          to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+          copies of the Software, and to permit persons to whom the Software is
+          furnished to do so, subject to the following conditions:
+
+          The above copyright notice and this permission notice shall be included in all
+          copies or substantial portions of the Software.
+
+          THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+          IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+          FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+          AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+          LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+          OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+          SOFTWARE.
+
+          ## Fideo
+
+          The main Fideo project remains distributed under the GNU Affero General
+          Public License version 3 (AGPL-3.0).
+          NOTICE
+
+      - name: Add source attribution
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/main/crawler/plugins/douyin-abogus.js'
+
+          if (
+            !fs.existsSync(path)
+          ) {
+            throw new Error(
+              'douyin-abogus.js not found'
+            )
+          }
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          const marker =
+            'Portions adapted from ihmily/streamget'
+
+          if (
+            !text.includes(marker)
+          ) {
+            const header =
+          `/*
+           * Portions adapted from ihmily/streamget
+           * https://github.com/ihmily/streamget
+           *
+           * Copyright (c) 2025 Hmily
+           * Licensed under the MIT License.
+           *
+           * See THIRD_PARTY_NOTICES.md for the full license text.
+           */
+
+          `
+
+            text =
+              header +
+              text
+
+            fs.writeFileSync(
+              path,
+              text,
+              'utf8'
+            )
+          }
+
+          console.log(
+            'Third-party attribution verified.'
+          )
+          NODE
+
+      # ============================================================
+      # 4. 正式版本号
+      # ============================================================
+
+      - name: Set release version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          npm version \
+            "$VERSION" \
+            --no-git-tag-version
+
+      # ============================================================
+      # 5. 正式发布前完整检查
+      # ============================================================
+
+      - name: Verify V2.8 anchor monitoring
+        run: |
+          grep -q \
+            "'www.douyin.com':" \
+            src/main/crawler/index.js
+
+          grep -q \
+            "'douyin.com':" \
+            src/main/crawler/index.js
+
+          grep -q \
+            "getDouyinProfileSecUid" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "getDouyinAnchorProfile" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "resolveDouyinAnchorLiveRoom" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "sec_user_id" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "aweme/v1/web/user/profile/other" \
+            src/main/crawler/plugins/douyin.js
+
+          echo \
+            "V2.8 anchor monitoring verified."
+
+      - name: Verify recording core
+        run: |
+          grep -q \
+            "handleMonitorOnly" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "autoRecord: boolean" \
+            type.d.ts
+
+          grep -q \
+            "getQualityRank" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "candidate_resolution" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "videoCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "audioCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          echo \
+            "Recording core verified."
+
+      - name: Verify preview removed
+        run: |
+          LEFTOVERS="$(
+            grep -R \
+              -n \
+              -E \
+              'START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|StreamPreviewDialog|preview-transcoder|preview-proxy' \
+              src \
+              || true
+          )"
+
+          if [ -n "$LEFTOVERS" ]
+          then
+            echo "$LEFTOVERS"
+            exit 1
+          fi
+
+          echo \
+            "Removed preview feature remains removed."
+
+      - name: Verify licenses
+        run: |
+          test -f LICENSE
+          test -f THIRD_PARTY_NOTICES.md
+
+          grep -q \
+            "GNU AFFERO GENERAL PUBLIC LICENSE" \
+            LICENSE
+
+          grep -q \
+            "Copyright (c) 2025 Hmily" \
+            THIRD_PARTY_NOTICES.md
+
+          grep -q \
+            "MIT License" \
+            THIRD_PARTY_NOTICES.md
+
+          grep -q \
+            "Portions adapted from ihmily/streamget" \
+            src/main/crawler/plugins/douyin-abogus.js
+
+          echo \
+            "License notices verified."
+
+      # ============================================================
+      # 6. TypeScript / Electron 构建
+      # ============================================================
+
+      - name: TypeScript check
+        run: |
+          npm run typecheck
+
+      - name: Build Electron
+        run: |
+          npm run build
+
+      # ============================================================
+      # 7. 构建正式 Windows x64 安装包
+      # ============================================================
+
+      - name: Build Windows x64 installer
+        run: |
+          npx electron-builder \
+            --win \
+            nsis \
+            --x64 \
+            --publish never
+
+      - name: Verify release installer
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $package = Get-Content package.json | ConvertFrom-Json
+
+          if ($package.version -ne $env:VERSION) {
+            throw "Version mismatch. Expected $env:VERSION, got $($package.version)"
+          }
+
+          $expected = "dist/fideo-$env:VERSION-x64.exe"
+
+          if (-not (Test-Path $expected)) {
+            throw "Release installer not found: $expected"
+          }
+
+          $file = Get-Item $expected
+
+          if ($file.Length -lt 10000000) {
+            throw "Installer size is unexpectedly small."
+          }
+
+          Write-Host ""
+          Write-Host "Release installer verified:"
+          Write-Host "Name: $($file.Name)"
+          Write-Host "Size: $($file.Length)"
+          Write-Host "Path: $($file.FullName)"
+
+      # ============================================================
+      # 8. 创建正式发布分支和 Tag
+      # ============================================================
+
+      - name: Check release tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git fetch \
+            origin \
+            --tags
+
+          if git rev-parse \
+            "v$VERSION" \
+            >/dev/null 2>&1
+          then
+            echo \
+              "Tag v$VERSION already exists."
+
+            exit 1
+          fi
+
+      - name: Commit official release source
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          RELEASE_BRANCH="release-v$VERSION"
+
+          git switch \
+            -C \
+            "$RELEASE_BRANCH"
+
+          git add \
+            package.json \
+            package-lock.json \
+            THIRD_PARTY_NOTICES.md \
+            src/main/crawler/plugins/douyin-abogus.js
+
+          git commit \
+            -m "Release v$VERSION"
+
+          git tag \
+            -a \
+            "v$VERSION" \
+            -m "Fideo v$VERSION"
+
+          git push \
+            --force \
+            origin \
+            "$RELEASE_BRANCH"
+
+          git push \
+            origin \
+            "v$VERSION"
+
+      # ============================================================
+      # 9. Artifact 备份
+      # ============================================================
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-${{ inputs.version }}-official-windows-x64
+          path: dist/fideo-${{ inputs.version }}-x64.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      # ============================================================
+      # 10. GitHub 正式 Release
+      # ============================================================
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Fideo v${{ inputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            ## Fideo v${{ inputs.version }}
+
+            本版本基于已经完成实际测试的 Douyin V2.8。
+
+            ### 主要更新
+
+            - 支持抖音直播间链接监控
+            - 新增抖音主播主页链接监控
+            - 主播未开播时也可以提前添加监控任务
+            - 主播开播后自动解析当前直播间
+            - 自动获取 web_rid 并进入现有录制流程
+            - 保留抖音高画质直播流选择
+            - 支持自动录制
+            - 支持仅监控 / 开播提醒模式
+            - 优化监控状态与界面布局
+            - 移除不稳定的直播预览功能
+            - 保留 FFmpeg 音视频原流复制录制
+
+            ### 使用主播主页监控
+
+            可以添加类似：
+
+            `https://www.douyin.com/user/...`
+
+            的主播主页地址。
+
+            即使主播当前没有开播，也可以提前加入监控列表。
+            检测到主播开播后，程序会自动解析直播间并继续执行提醒或录制。
+
+            ### 开源许可
+
+            Fideo 按 AGPL-3.0 发布。
+
+            部分抖音请求签名实现参考/改编自开源项目 streamget，
+            相关 MIT 许可证和版权声明见源码中的 THIRD_PARTY_NOTICES.md。
+
+            ### 注意
+
+            本软件仅应用于管理和录制您有权访问、保存的直播内容。
+            请遵守相关平台规则、当地法律以及内容版权要求。
+
+            Windows 安装包当前未使用商业代码签名证书，
+            Windows SmartScreen 可能显示未知发布者提示。
+          files: |
+            dist/fideo-${{ inputs.version }}-x64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ============================================================
+      # 11. 发布摘要
+      # ============================================================
+
+      - name: Release summary
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "# Fideo 正式版发布成功"
+            echo
+            echo "版本：\`v$VERSION\`"
+            echo
+            echo "安装包：\`fideo-$VERSION-x64.exe\`"
+            echo
+            echo "Tag：\`v$VERSION\`"
+            echo
+            echo "发布分支：\`release-v$VERSION\`"
+            echo
+            echo "测试来源：\`douyin-v2.8-anchor-monitor-test\`"
+            echo
+            echo "GitHub Release：已创建"
+          } >> "$GITHUB_STEP_SUMMARY"
