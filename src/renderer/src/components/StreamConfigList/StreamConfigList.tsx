@@ -154,7 +154,7 @@ export default function StreamConfigList() {
   return (
     <>
       {
-        <div className="show-scrollbar flex flex-col gap-[12px] p-[24px] overflow-y-auto h-[calc(100vh-80px)]">
+        <div className="show-scrollbar mx-auto flex h-[calc(100vh-80px)] w-full max-w-[1100px] flex-col gap-3 overflow-y-auto px-5 py-4">
           {streamConfigList.map((streamConfig) => (
             <div
               key={streamConfig.id}

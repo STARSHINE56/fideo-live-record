@@ -111,7 +111,7 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
         <div className="show-scrollbar overflow-y-auto mr-[-14px]">
           <div className=" pl-1 pr-4 pb-2">
             <Form {...form}>
-              <form className="space-y-8">
+              <form className="space-y-5">
                 <FormField
                   control={form.control}
                   name="directory"
