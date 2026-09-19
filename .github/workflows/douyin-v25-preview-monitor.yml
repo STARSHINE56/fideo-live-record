@@ -1,0 +1,2140 @@
+name: Douyin V2.5 Preview And Monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "测试版本号，例如 1.1.4"
+        required: true
+        default: "1.1.4"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Local Preview Proxy And Notify Only
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout V2.4 tested source
+        uses: actions/checkout@v4
+        with:
+          ref: douyin-v2.4-test
+          fetch-depth: 0
+
+      - name: Create V2.5 test branch
+        run: |
+          git switch -C douyin-v2.5-test
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      # ==========================================================
+      # 本地直播流代理
+      # ==========================================================
+
+      - name: Create local preview proxy
+        run: |
+          cat > src/main/preview-proxy.ts <<'TS'
+          import http, {
+            type IncomingMessage,
+            type Server,
+            type ServerResponse
+          } from 'node:http'
+          import https from 'node:https'
+
+          interface PreviewContext {
+            roomUrl: string
+            cookie?: string
+          }
+
+          let server: Server | null = null
+          let serverPort = 0
+          let context: PreviewContext | null = null
+
+          const USER_AGENT =
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+            'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+            'Chrome/123.0.0.0 Safari/537.36'
+
+          function getLocalUrl(
+            target: string
+          ) {
+            return (
+              `http://127.0.0.1:${serverPort}` +
+              `/proxy?url=${encodeURIComponent(target)}`
+            )
+          }
+
+          function resolveUrl(
+            value: string,
+            base: string
+          ) {
+            try {
+              return new URL(
+                value,
+                base
+              ).toString()
+            } catch {
+              return value
+            }
+          }
+
+          function rewritePlaylist(
+            text: string,
+            upstreamUrl: string
+          ) {
+            return text
+              .split(/\r?\n/)
+              .map((line) => {
+                const trimmed =
+                  line.trim()
+
+                if (!trimmed) {
+                  return line
+                }
+
+                if (
+                  trimmed.startsWith('#')
+                ) {
+                  return line.replace(
+                    /URI="([^"]+)"/g,
+                    (_, value) => {
+                      const resolved =
+                        resolveUrl(
+                          value,
+                          upstreamUrl
+                        )
+
+                      return (
+                        `URI="${getLocalUrl(
+                          resolved
+                        )}"`
+                      )
+                    }
+                  )
+                }
+
+                const resolved =
+                  resolveUrl(
+                    trimmed,
+                    upstreamUrl
+                  )
+
+                return getLocalUrl(
+                  resolved
+                )
+              })
+              .join('\n')
+          }
+
+          function requestUpstream(
+            targetUrl: string,
+            clientReq: IncomingMessage,
+            clientRes: ServerResponse,
+            redirectCount = 0
+          ) {
+            let target: URL
+
+            try {
+              target =
+                new URL(
+                  targetUrl
+                )
+            } catch {
+              clientRes.statusCode =
+                400
+
+              clientRes.end(
+                'Invalid URL'
+              )
+
+              return
+            }
+
+            if (
+              target.protocol !==
+                'http:' &&
+              target.protocol !==
+                'https:'
+            ) {
+              clientRes.statusCode =
+                400
+
+              clientRes.end(
+                'Unsupported protocol'
+              )
+
+              return
+            }
+
+            const requester =
+              target.protocol ===
+                'https:'
+                ? https
+                : http
+
+            const headers:
+              Record<string, string> = {
+                'User-Agent':
+                  USER_AGENT,
+
+                Accept:
+                  '*/*',
+
+                Referer:
+                  context?.roomUrl ||
+                  'https://live.douyin.com/'
+              }
+
+            if (
+              context?.cookie
+            ) {
+              headers.Cookie =
+                context.cookie
+            }
+
+            if (
+              typeof clientReq
+                .headers.range ===
+              'string'
+            ) {
+              headers.Range =
+                clientReq.headers.range
+            }
+
+            const upstreamReq =
+              requester.request(
+                target,
+                {
+                  method:
+                    'GET',
+
+                  headers
+                },
+                (upstreamRes) => {
+                  const status =
+                    upstreamRes.statusCode ||
+                    500
+
+                  if (
+                    status >= 300 &&
+                    status < 400 &&
+                    upstreamRes
+                      .headers
+                      .location &&
+                    redirectCount < 5
+                  ) {
+                    const nextUrl =
+                      resolveUrl(
+                        upstreamRes
+                          .headers
+                          .location,
+
+                        target.toString()
+                      )
+
+                    upstreamRes.resume()
+
+                    requestUpstream(
+                      nextUrl,
+                      clientReq,
+                      clientRes,
+                      redirectCount + 1
+                    )
+
+                    return
+                  }
+
+                  const contentType =
+                    String(
+                      upstreamRes
+                        .headers[
+                        'content-type'
+                      ] ||
+                        ''
+                    )
+
+                  const isHls =
+                    contentType.includes(
+                      'mpegurl'
+                    ) ||
+                    /\.m3u8(?:\?|$)/i.test(
+                      target.toString()
+                    )
+
+                  clientRes.statusCode =
+                    status
+
+                  clientRes.setHeader(
+                    'Access-Control-Allow-Origin',
+                    '*'
+                  )
+
+                  clientRes.setHeader(
+                    'Access-Control-Allow-Headers',
+                    '*'
+                  )
+
+                  clientRes.setHeader(
+                    'Cache-Control',
+                    'no-store'
+                  )
+
+                  if (contentType) {
+                    clientRes.setHeader(
+                      'Content-Type',
+                      contentType
+                    )
+                  }
+
+                  const acceptRanges =
+                    upstreamRes.headers[
+                      'accept-ranges'
+                    ]
+
+                  if (acceptRanges) {
+                    clientRes.setHeader(
+                      'Accept-Ranges',
+                      acceptRanges
+                    )
+                  }
+
+                  const contentRange =
+                    upstreamRes.headers[
+                      'content-range'
+                    ]
+
+                  if (contentRange) {
+                    clientRes.setHeader(
+                      'Content-Range',
+                      contentRange
+                    )
+                  }
+
+                  if (!isHls) {
+                    const contentLength =
+                      upstreamRes.headers[
+                        'content-length'
+                      ]
+
+                    if (
+                      contentLength
+                    ) {
+                      clientRes.setHeader(
+                        'Content-Length',
+                        contentLength
+                      )
+                    }
+
+                    upstreamRes.pipe(
+                      clientRes
+                    )
+
+                    clientReq.on(
+                      'close',
+                      () => {
+                        upstreamReq.destroy()
+                      }
+                    )
+
+                    return
+                  }
+
+                  const chunks:
+                    Buffer[] = []
+
+                  upstreamRes.on(
+                    'data',
+                    (chunk) => {
+                      chunks.push(
+                        Buffer.isBuffer(
+                          chunk
+                        )
+                          ? chunk
+                          : Buffer.from(
+                              chunk
+                            )
+                      )
+                    }
+                  )
+
+                  upstreamRes.on(
+                    'end',
+                    () => {
+                      const text =
+                        Buffer.concat(
+                          chunks
+                        ).toString(
+                          'utf8'
+                        )
+
+                      const rewritten =
+                        rewritePlaylist(
+                          text,
+                          target.toString()
+                        )
+
+                      clientRes.end(
+                        rewritten
+                      )
+                    }
+                  )
+                }
+              )
+
+            upstreamReq.setTimeout(
+              20000,
+              () => {
+                upstreamReq.destroy(
+                  new Error(
+                    'Preview upstream timeout'
+                  )
+                )
+              }
+            )
+
+            upstreamReq.on(
+              'error',
+              () => {
+                if (
+                  !clientRes
+                    .headersSent
+                ) {
+                  clientRes.statusCode =
+                    502
+                }
+
+                if (
+                  !clientRes
+                    .writableEnded
+                ) {
+                  clientRes.end(
+                    'Preview proxy error'
+                  )
+                }
+              }
+            )
+
+            upstreamReq.end()
+          }
+
+          async function ensureServer() {
+            if (server) {
+              return
+            }
+
+            server =
+              http.createServer(
+                (
+                  req,
+                  res
+                ) => {
+                  res.setHeader(
+                    'Access-Control-Allow-Origin',
+                    '*'
+                  )
+
+                  if (
+                    req.method ===
+                    'OPTIONS'
+                  ) {
+                    res.statusCode =
+                      204
+
+                    res.end()
+
+                    return
+                  }
+
+                  const reqUrl =
+                    new URL(
+                      req.url ||
+                        '/',
+
+                      'http://127.0.0.1'
+                    )
+
+                  if (
+                    reqUrl.pathname !==
+                    '/proxy'
+                  ) {
+                    res.statusCode =
+                      404
+
+                    res.end(
+                      'Not Found'
+                    )
+
+                    return
+                  }
+
+                  const target =
+                    reqUrl.searchParams.get(
+                      'url'
+                    )
+
+                  if (!target) {
+                    res.statusCode =
+                      400
+
+                    res.end(
+                      'Missing URL'
+                    )
+
+                    return
+                  }
+
+                  requestUpstream(
+                    target,
+                    req,
+                    res
+                  )
+                }
+              )
+
+            await new Promise<void>(
+              (
+                resolve,
+                reject
+              ) => {
+                server!.once(
+                  'error',
+                  reject
+                )
+
+                server!.listen(
+                  0,
+                  '127.0.0.1',
+                  () => {
+                    const address =
+                      server!.address()
+
+                    if (
+                      !address ||
+                      typeof address ===
+                        'string'
+                    ) {
+                      reject(
+                        new Error(
+                          'Unable to start preview proxy'
+                        )
+                      )
+
+                      return
+                    }
+
+                    serverPort =
+                      address.port
+
+                    resolve()
+                  }
+                )
+              }
+            )
+          }
+
+          export async function startPreviewProxy(
+            info: {
+              streamUrl: string
+              roomUrl: string
+              cookie?: string
+            }
+          ) {
+            context = {
+              roomUrl:
+                info.roomUrl,
+
+              cookie:
+                info.cookie
+            }
+
+            await ensureServer()
+
+            return {
+              url:
+                getLocalUrl(
+                  info.streamUrl
+                )
+            }
+          }
+
+          export async function stopPreviewProxy() {
+            context = null
+
+            if (!server) {
+              return
+            }
+
+            const current =
+              server
+
+            server = null
+            serverPort = 0
+
+            await new Promise<void>(
+              (resolve) => {
+                current.close(
+                  () => resolve()
+                )
+              }
+            )
+          }
+          TS
+
+      # ==========================================================
+      # V2.5 主补丁
+      # ==========================================================
+
+      - name: Create V2.5 source patch
+        run: |
+          cat > "$RUNNER_TEMP/patch-v25.cjs" <<'NODE'
+          const fs =
+            require('fs')
+
+          function read(path) {
+            return fs.readFileSync(
+              path,
+              'utf8'
+            )
+          }
+
+          function write(
+            path,
+            content
+          ) {
+            fs.writeFileSync(
+              path,
+              content,
+              'utf8'
+            )
+          }
+
+          function replaceOnce(
+            source,
+            oldText,
+            newText,
+            label
+          ) {
+            if (
+              !source.includes(
+                oldText
+              )
+            ) {
+              throw new Error(
+                `Patch target not found: ${label}`
+              )
+            }
+
+            return source.replace(
+              oldText,
+              newText
+            )
+          }
+
+          // ======================================================
+          // 1. type.d.ts
+          // ======================================================
+
+          const typePath =
+            'type.d.ts'
+
+          let typeSource =
+            read(typePath)
+
+          if (
+            !typeSource.includes(
+              'autoRecord: boolean'
+            )
+          ) {
+            typeSource =
+              replaceOnce(
+                typeSource,
+
+                `  detectResolution: boolean`,
+
+                `  detectResolution: boolean
+            autoRecord: boolean`,
+
+                'IStreamConfig autoRecord'
+              )
+          }
+
+          write(
+            typePath,
+            typeSource
+          )
+
+
+          // ======================================================
+          // 2. const.ts
+          // ======================================================
+
+          const constPath =
+            'src/const.ts'
+
+          let constSource =
+            read(constPath)
+
+          if (
+            !constSource.includes(
+              'START_STREAM_PREVIEW'
+            )
+          ) {
+            constSource =
+              replaceOnce(
+                constSource,
+
+                `export const GET_ROOM_INFO = 'GET_ROOM_INFO'`,
+
+                `export const GET_ROOM_INFO = 'GET_ROOM_INFO'
+            export const START_STREAM_PREVIEW = 'START_STREAM_PREVIEW'
+            export const STOP_STREAM_PREVIEW = 'STOP_STREAM_PREVIEW'`,
+
+                'preview constants'
+              )
+          }
+
+          write(
+            constPath,
+            constSource
+          )
+
+
+          // ======================================================
+          // 3. Existing config migration
+          // ======================================================
+
+          const storePath =
+            'src/renderer/src/store/useStreamConfigStore.ts'
+
+          let store =
+            read(storePath)
+
+          if (
+            !store.includes(
+              'typeof streamConfig.autoRecord'
+            )
+          ) {
+            store =
+              replaceOnce(
+                store,
+
+                `      if (!streamConfig.id) {
+                    shouldUpdate = true
+                    streamConfig.id = nanoid()
+                  }
+                  return streamConfig`,
+
+                `      if (!streamConfig.id) {
+                    shouldUpdate = true
+                    streamConfig.id = nanoid()
+                  }
+
+                  if (
+                    typeof streamConfig.autoRecord !==
+                    'boolean'
+                  ) {
+                    shouldUpdate = true
+                    streamConfig.autoRecord = true
+                  }
+
+                  return streamConfig`,
+
+                'config migration'
+              )
+          }
+
+          write(
+            storePath,
+            store
+          )
+
+
+          // ======================================================
+          // 4. StreamConfigSheet
+          // ======================================================
+
+          const sheetPath =
+            'src/renderer/src/components/StreamConfigSheet.tsx'
+
+          let sheet =
+            read(sheetPath)
+
+          if (
+            !sheet.includes(
+              'autoRecord: z.boolean()'
+            )
+          ) {
+            sheet =
+              replaceOnce(
+                sheet,
+
+                `  detectResolution: z.boolean()`,
+
+                `  detectResolution: z.boolean(),
+              autoRecord: z.boolean()`,
+
+                'form schema autoRecord'
+              )
+          }
+
+          if (
+            !sheet.includes(
+              'autoRecord: true'
+            )
+          ) {
+            sheet =
+              replaceOnce(
+                sheet,
+
+                `  detectResolution: false`,
+
+                `  detectResolution: false,
+              autoRecord: true`,
+
+                'default autoRecord'
+              )
+          }
+
+          if (
+            !sheet.includes(
+              `name="autoRecord"`
+            )
+          ) {
+            const marker =
+              `                <FormField
+                              control={form.control}
+                              name="convertToMP4"`
+
+            if (
+              !sheet.includes(
+                marker
+              )
+            ) {
+              throw new Error(
+                'autoRecord UI insertion marker missing'
+              )
+            }
+
+            const autoRecordField =
+              `                <FormField
+                            control={form.control}
+                            name="autoRecord"
+                            render={({ field }) => (
+                              <FormItem>
+                                <TooltipProvider delayDuration={400}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <FormLabel className="cursor-pointer">
+                                        {t('stream_config.auto_record')}
+                                      </FormLabel>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p className="max-w-[400px]">
+                                        {t('stream_config.auto_record_tooltip')}
+                                      </p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+
+                                <Switch
+                                  checked={field.value}
+                                  onCheckedChange={field.onChange}
+                                  className="flex"
+                                />
+                              </FormItem>
+                            )}
+                          />
+
+              `
+
+            sheet =
+              sheet.replace(
+                marker,
+                autoRecordField +
+                  marker
+              )
+          }
+
+          write(
+            sheetPath,
+            sheet
+          )
+
+
+          // ======================================================
+          // 5. Locales
+          // ======================================================
+
+          const localePath =
+            'src/renderer/src/locales/locales.js'
+
+          let locale =
+            read(localePath)
+
+          if (
+            !locale.includes(
+              `auto_record: 'Automatically Record When Live'`
+            )
+          ) {
+            locale =
+              replaceOnce(
+                locale,
+
+                `        should_convert_to_mp4: 'Convert to MP4 after recording ends',`,
+
+                `        auto_record: 'Automatically Record When Live',
+                    auto_record_tooltip:
+                      'When disabled, Fideo only monitors the streamer and sends a notification when the stream starts. It will not start FFmpeg recording.',
+                    live_detected: 'Streamer is live',
+                    live_detected_notify: '{{title}} is now live',
+                    should_convert_to_mp4: 'Convert to MP4 after recording ends',`,
+
+                'English auto record locale'
+              )
+          }
+
+          if (
+            !locale.includes(
+              `auto_record: '开播后自动录制'`
+            )
+          ) {
+            locale =
+              replaceOnce(
+                locale,
+
+                `        should_convert_to_mp4: '录制结束后是否转为MP4',`,
+
+                `        auto_record: '开播后自动录制',
+                    auto_record_tooltip:
+                      '关闭后只监控主播是否开播；检测到开播时发送通知，但不会启动 FFmpeg 录制。',
+                    live_detected: '检测到主播开播',
+                    live_detected_notify: '{{title}} 已经开播',
+                    should_convert_to_mp4: '录制结束后是否转为MP4',`,
+
+                'Chinese auto record locale'
+              )
+          }
+
+          write(
+            localePath,
+            locale
+          )
+
+
+          // ======================================================
+          // 6. Preload
+          // ======================================================
+
+          const preloadPath =
+            'src/preload/index.ts'
+
+          let preload =
+            read(preloadPath)
+
+          if (
+            !preload.includes(
+              'START_STREAM_PREVIEW'
+            )
+          ) {
+            preload =
+              replaceOnce(
+                preload,
+
+                `  GET_ROOM_INFO,`,
+
+                `  GET_ROOM_INFO,
+              START_STREAM_PREVIEW,
+              STOP_STREAM_PREVIEW,`,
+
+                'preload constant imports'
+              )
+          }
+
+          if (
+            !preload.includes(
+              'startStreamPreview:'
+            )
+          ) {
+            preload =
+              replaceOnce(
+                preload,
+
+                `  getRoomInfo: (info: { roomUrl: string; proxy?: string; cookie?: string }) =>
+                  ipcRenderer.invoke(GET_ROOM_INFO, info),`,
+
+                `  getRoomInfo: (info: { roomUrl: string; proxy?: string; cookie?: string }) =>
+                  ipcRenderer.invoke(GET_ROOM_INFO, info),
+
+                startStreamPreview: (info: {
+                  streamUrl: string
+                  roomUrl: string
+                  proxy?: string
+                  cookie?: string
+                }) =>
+                  ipcRenderer.invoke(
+                    START_STREAM_PREVIEW,
+                    info
+                  ),
+
+                stopStreamPreview: () =>
+                  ipcRenderer.invoke(
+                    STOP_STREAM_PREVIEW
+                  ),`,
+
+                'preload preview methods'
+              )
+          }
+
+          write(
+            preloadPath,
+            preload
+          )
+
+
+          // ======================================================
+          // 7. Preload typings
+          // ======================================================
+
+          const preloadTypePath =
+            'src/preload/index.d.ts'
+
+          let preloadType =
+            read(preloadTypePath)
+
+          if (
+            !preloadType.includes(
+              'startStreamPreview:'
+            )
+          ) {
+            preloadType =
+              replaceOnce(
+                preloadType,
+
+                `      navByDefaultBrowser: (url: string) => void`,
+
+                `      navByDefaultBrowser: (url: string) => void
+
+                  startStreamPreview: (info: {
+                    streamUrl: string
+                    roomUrl: string
+                    proxy?: string
+                    cookie?: string
+                  }) => Promise<{
+                    url: string
+                  }>
+
+                  stopStreamPreview: () => Promise<void>`,
+
+                'preload preview typing'
+              )
+          }
+
+          write(
+            preloadTypePath,
+            preloadType
+          )
+
+
+          // ======================================================
+          // 8. Main process
+          // ======================================================
+
+          const mainPath =
+            'src/main/index.ts'
+
+          let main =
+            read(mainPath)
+
+          if (
+            !main.includes(
+              'START_STREAM_PREVIEW'
+            )
+          ) {
+            main =
+              replaceOnce(
+                main,
+
+                `  GET_ROOM_INFO,`,
+
+                `  GET_ROOM_INFO,
+              START_STREAM_PREVIEW,
+              STOP_STREAM_PREVIEW,`,
+
+                'main preview constants'
+              )
+          }
+
+          if (
+            !main.includes(
+              `from './preview-proxy'`
+            )
+          ) {
+            main =
+              replaceOnce(
+                main,
+
+                `import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'`,
+
+                `import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
+            import {
+              startPreviewProxy,
+              stopPreviewProxy
+            } from './preview-proxy'`,
+
+                'preview proxy import'
+              )
+          }
+
+          if (
+            !main.includes(
+              `ipcMain.handle(
+                START_STREAM_PREVIEW`
+            )
+          ) {
+            const marker =
+              `  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
+                shell.openExternal(url)
+              })`
+
+            if (
+              !main.includes(
+                marker
+              )
+            ) {
+              throw new Error(
+                'main preview IPC marker missing'
+              )
+            }
+
+            const handlers =
+              `  ipcMain.handle(
+                START_STREAM_PREVIEW,
+                async (
+                  _,
+                  info: {
+                    streamUrl: string
+                    roomUrl: string
+                    proxy?: string
+                    cookie?: string
+                  }
+                ) => {
+                  const effectiveCookie =
+                    await getEffectiveCookie(
+                      info.roomUrl,
+                      info.cookie
+                    )
+
+                  await stopPreviewProxy()
+
+                  return startPreviewProxy({
+                    streamUrl:
+                      info.streamUrl,
+
+                    roomUrl:
+                      info.roomUrl,
+
+                    cookie:
+                      effectiveCookie
+                  })
+                }
+              )
+
+              ipcMain.handle(
+                STOP_STREAM_PREVIEW,
+                async () => {
+                  await stopPreviewProxy()
+                }
+              )
+
+            `
+
+            main =
+              main.replace(
+                marker,
+                marker +
+                  '\n\n' +
+                  handlers
+              )
+          }
+
+          if (
+            !main.includes(
+              `await stopPreviewProxy()
+                stopFrpc()`
+            )
+          ) {
+            main =
+              replaceOnce(
+                main,
+
+                `    stopFrpc()
+
+                win?.destroy()`,
+
+                `    await stopPreviewProxy()
+                stopFrpc()
+
+                win?.destroy()`,
+
+                'stop proxy on force close'
+              )
+          }
+
+          write(
+            mainPath,
+            main
+          )
+
+
+          // ======================================================
+          // 9. OperationBar
+          // ======================================================
+
+          const opPath =
+            'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
+
+          let op =
+            read(opPath)
+
+          if (
+            !op.includes(
+              'const liveNotifiedRef'
+            )
+          ) {
+            op =
+              replaceOnce(
+                op,
+
+                `  const timer = useRef<NodeJS.Timeout>()`,
+
+                `  const timer = useRef<NodeJS.Timeout>()
+              const liveNotifiedRef = useRef(false)`,
+
+                'live notification ref'
+              )
+          }
+
+          const startRecordStart =
+            op.indexOf(
+              '  const handleStartRecord = async (isFirst = true) => {'
+            )
+
+          const playClickStart =
+            op.indexOf(
+              '  const handlePlayClick = () => {',
+              startRecordStart
+            )
+
+          if (
+            startRecordStart < 0 ||
+            playClickStart < 0
+          ) {
+            throw new Error(
+              'recording function block not found'
+            )
+          }
+
+          const oldRecordBlock =
+            op.slice(
+              startRecordStart,
+              playClickStart
+            )
+
+          const monitorBlock = String.raw`
+            const scheduleMonitorOnly = () => {
+              if (timer.current) {
+                clearTimeout(
+                  timer.current
+                )
+              }
+
+              timer.current =
+                setTimeout(
+                  () => {
+                    void handleMonitorOnly(
+                      false
+                    )
+                  },
+
+                  1000 *
+                    streamConfig.interval
+                )
+            }
+
+            const handleMonitorOnly = async (
+              isFirst = true
+            ) => {
+              if (isFirst) {
+                liveNotifiedRef.current =
+                  false
+
+                await updateStreamConfig(
+                  {
+                    ...streamConfig,
+                    status:
+                      StreamStatus.MONITORING
+                  },
+
+                  streamConfig.id
+                )
+              }
+
+              const result =
+                await window.api
+                  .getLiveUrls({
+                    roomUrl:
+                      streamConfig.roomUrl,
+
+                    cookie:
+                      streamConfig.cookie,
+
+                    proxy:
+                      streamConfig.proxy,
+
+                    title:
+                      streamConfig.title
+                  })
+                  .catch(() => ({
+                    code:
+                      UNKNOWN_CODE,
+
+                    liveUrls:
+                      [] as string[]
+                  }))
+
+              const currentStatus =
+                useStreamConfigStore
+                  .getState()
+                  .streamConfigList
+                  .find(
+                    (item) =>
+                      item.id ===
+                      streamConfig.id
+                  )
+                  ?.status
+
+              if (
+                currentStatus ===
+                StreamStatus.NOT_STARTED
+              ) {
+                return
+              }
+
+              if (
+                result.code ===
+                SUCCESS_CODE
+              ) {
+                if (
+                  !liveNotifiedRef.current
+                ) {
+                  liveNotifiedRef.current =
+                    true
+
+                  const message =
+                    t(
+                      'stream_config.live_detected_notify',
+                      {
+                        title:
+                          streamConfig.title
+                      }
+                    )
+
+                  window.api.showNotification(
+                    t(
+                      'stream_config.live_detected'
+                    ),
+                    message
+                  )
+
+                  toast({
+                    title:
+                      streamConfig.title,
+
+                    description:
+                      t(
+                        'stream_config.live_detected'
+                      )
+                  })
+
+                  if (
+                    defaultSettingsConfig
+                      .xizhiKey
+                  ) {
+                    useXizhiToPushNotification({
+                      key:
+                        defaultSettingsConfig
+                          .xizhiKey,
+
+                      title:
+                        streamConfig.title,
+
+                      content:
+                        t(
+                          'stream_config.live_detected'
+                        )
+                    })
+                  }
+                }
+
+                scheduleMonitorOnly()
+
+                return
+              }
+
+              if (
+                result.code ===
+                  CRAWLER_ERROR_CODE.NOT_URLS ||
+                result.code ===
+                  UNKNOWN_CODE
+              ) {
+                liveNotifiedRef.current =
+                  false
+
+                scheduleMonitorOnly()
+
+                return
+              }
+
+              const errMessage =
+                crawlerErrorCodeToI18nMessage(
+                  result.code,
+                  'error.get_line.'
+                )
+
+              if (isFirst) {
+                toast({
+                  title:
+                    streamConfig.title,
+
+                  description:
+                    t(errMessage),
+
+                  variant:
+                    'destructive'
+                })
+              }
+
+              scheduleMonitorOnly()
+            }
+
+          `
+
+          op =
+            op.slice(
+              0,
+              startRecordStart
+            ) +
+            monitorBlock +
+            oldRecordBlock +
+            op.slice(
+              playClickStart
+            )
+
+          const oldPlayPause = String.raw`  const handlePlayClick = () => {
+              handleStartRecord(true)
+            }
+
+            const handlePauseClick = async () => {
+              await window.api.stopStreamRecord(streamConfig.id)
+              clearTimeout(timer.current)
+            }`
+
+          const newPlayPause = String.raw`  const handlePlayClick = () => {
+              if (
+                streamConfig.autoRecord ===
+                false
+              ) {
+                void handleMonitorOnly(
+                  true
+                )
+
+                return
+              }
+
+              void handleStartRecord(
+                true
+              )
+            }
+
+            const handlePauseClick = async () => {
+              if (timer.current) {
+                clearTimeout(
+                  timer.current
+                )
+              }
+
+              liveNotifiedRef.current =
+                false
+
+              if (
+                streamConfig.autoRecord ===
+                false
+              ) {
+                await updateStreamConfig(
+                  {
+                    ...streamConfig,
+                    status:
+                      StreamStatus.NOT_STARTED
+                  },
+
+                  streamConfig.id
+                )
+
+                return
+              }
+
+              await window.api.stopStreamRecord(
+                streamConfig.id
+              )
+            }`
+
+          if (
+            !op.includes(
+              oldPlayPause
+            )
+          ) {
+            throw new Error(
+              'play/pause block not found'
+            )
+          }
+
+          op =
+            op.replace(
+              oldPlayPause,
+              newPlayPause
+            )
+
+
+          // ======================================================
+          // Preview function: local proxy first
+          // ======================================================
+
+          const previewStart =
+            op.indexOf(
+              '  const handlePreviewClick = async () => {'
+            )
+
+          const previewEnd =
+            op.indexOf(
+              '  useEffect(() => {',
+              previewStart
+            )
+
+          if (
+            previewStart < 0 ||
+            previewEnd < 0
+          ) {
+            throw new Error(
+              'preview block not found'
+            )
+          }
+
+          const newPreview = String.raw`
+            const openPreviewStream = async (
+              streamUrl: string,
+              type: 'hls' | 'flv'
+            ) => {
+              const proxyResult =
+                await window.api.startStreamPreview({
+                  streamUrl,
+
+                  roomUrl:
+                    streamConfig.roomUrl,
+
+                  cookie:
+                    streamConfig.cookie,
+
+                  proxy:
+                    streamConfig.proxy
+                })
+
+              setPreviewType(
+                type
+              )
+
+              setPreviewUrl(
+                proxyResult.url
+              )
+
+              setPreviewOpen(
+                true
+              )
+            }
+
+            const handlePreviewOpenChange = (
+              open: boolean
+            ) => {
+              setPreviewOpen(
+                open
+              )
+
+              if (!open) {
+                setPreviewUrl('')
+
+                void window.api
+                  .stopStreamPreview()
+              }
+            }
+
+            const handlePreviewClick = async () => {
+              setIsLoadingPreview(
+                true
+              )
+
+              try {
+                const {
+                  code,
+                  liveUrls
+                } =
+                  await window.api.getLiveUrls({
+                    roomUrl:
+                      streamConfig.roomUrl,
+
+                    cookie:
+                      streamConfig.cookie,
+
+                    proxy:
+                      streamConfig.proxy,
+
+                    title:
+                      streamConfig.title
+                  })
+
+                if (
+                  code !==
+                  SUCCESS_CODE
+                ) {
+                  toast({
+                    title:
+                      streamConfig.title,
+
+                    description:
+                      t(
+                        errorCodeToI18nMessage(
+                          code,
+                          'error.get_line.'
+                        )
+                      ),
+
+                    variant:
+                      'destructive'
+                  })
+
+                  return
+                }
+
+                if (
+                  !Array.isArray(
+                    liveUrls
+                  ) ||
+                  liveUrls.length ===
+                    0
+                ) {
+                  toast({
+                    title:
+                      streamConfig.title,
+
+                    description:
+                      t(
+                        'stream_config.preview_stream_unavailable'
+                      ),
+
+                    variant:
+                      'destructive'
+                  })
+
+                  return
+                }
+
+                const flvUrl =
+                  liveUrls.find(
+                    (url) =>
+                      /\.flv(?:\?|$)/i.test(
+                        url
+                      ) ||
+                      /pull-flv/i.test(
+                        url
+                      ) ||
+                      /\/flv\//i.test(
+                        url
+                      )
+                  )
+
+                if (flvUrl) {
+                  await openPreviewStream(
+                    flvUrl,
+                    'flv'
+                  )
+
+                  return
+                }
+
+                const hlsUrl =
+                  liveUrls.find(
+                    (url) =>
+                      /\.m3u8(?:\?|$)/i.test(
+                        url
+                      ) ||
+                      /pull-hls/i.test(
+                        url
+                      ) ||
+                      /\/hls\//i.test(
+                        url
+                      )
+                  )
+
+                if (hlsUrl) {
+                  await openPreviewStream(
+                    hlsUrl,
+                    'hls'
+                  )
+
+                  return
+                }
+
+                toast({
+                  title:
+                    streamConfig.title,
+
+                  description:
+                    t(
+                      'stream_config.preview_stream_unavailable'
+                    ),
+
+                  variant:
+                    'destructive'
+                })
+              } catch {
+                toast({
+                  title:
+                    streamConfig.title,
+
+                  description:
+                    t(
+                      'stream_config.preview_failed'
+                    ),
+
+                  variant:
+                    'destructive'
+                })
+              } finally {
+                setIsLoadingPreview(
+                  false
+                )
+              }
+            }
+
+
+          `
+
+          op =
+            op.slice(
+              0,
+              previewStart
+            ) +
+            newPreview +
+            op.slice(
+              previewEnd
+            )
+
+          op =
+            op.replace(
+              `      onOpenChange={
+                setPreviewOpen
+              }`,
+
+              `      onOpenChange={
+                handlePreviewOpenChange
+              }`
+            )
+
+          // Stop preview proxy when component unmounts.
+          if (
+            !op.includes(
+              'stopStreamPreview()'
+            )
+          ) {
+            throw new Error(
+              'Preview stop integration failed'
+            )
+          }
+
+          write(
+            opPath,
+            op
+          )
+
+
+          // ======================================================
+          // Final checks
+          // ======================================================
+
+          const finalSheet =
+            read(sheetPath)
+
+          const finalOp =
+            read(opPath)
+
+          const finalMain =
+            read(mainPath)
+
+          if (
+            !finalSheet.includes(
+              `name="autoRecord"`
+            )
+          ) {
+            throw new Error(
+              'autoRecord UI missing'
+            )
+          }
+
+          if (
+            !finalOp.includes(
+              'handleMonitorOnly'
+            )
+          ) {
+            throw new Error(
+              'monitor-only mode missing'
+            )
+          }
+
+          if (
+            !finalOp.includes(
+              'startStreamPreview'
+            )
+          ) {
+            throw new Error(
+              'local preview integration missing'
+            )
+          }
+
+          if (
+            !finalMain.includes(
+              'startPreviewProxy'
+            )
+          ) {
+            throw new Error(
+              'preview proxy IPC missing'
+            )
+          }
+
+          console.log(
+            'V2.5 patch completed successfully.'
+          )
+          NODE
+
+      - name: Validate V2.5 patch syntax
+        run: |
+          node --check \
+            "$RUNNER_TEMP/patch-v25.cjs"
+
+      - name: Apply V2.5 patch
+        run: |
+          node \
+            "$RUNNER_TEMP/patch-v25.cjs"
+
+      # ==========================================================
+      # Preview player stability
+      # ==========================================================
+
+      - name: Disable FLV latency chasing
+        run: |
+          node <<'NODE'
+          const fs =
+            require('fs')
+
+          const path =
+            'src/renderer/src/components/StreamPreviewDialog.tsx'
+
+          let source =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          source =
+            source.replace(
+              /,\s*liveBufferLatencyChasing:\s*true\s*,\s*liveBufferLatencyMaxLatency:\s*3\s*,\s*liveBufferLatencyMinRemain:\s*0\.5/g,
+              ''
+            )
+
+          source =
+            source.replace(
+              /\s*liveBufferLatencyChasing:\s*true,\s*/g,
+              '\n'
+            )
+
+          fs.writeFileSync(
+            path,
+            source,
+            'utf8'
+          )
+          NODE
+
+      # ==========================================================
+      # Version
+      # ==========================================================
+
+      - name: Update version
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          npm version \
+            "$APP_VERSION" \
+            --no-git-tag-version
+
+      # ==========================================================
+      # Source validation
+      # ==========================================================
+
+      - name: Verify V2.5 changes
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          echo \
+            "Checking auto-record switch..."
+
+          grep -q \
+            "autoRecord: boolean" \
+            type.d.ts
+
+          grep -q \
+            'name="autoRecord"' \
+            src/renderer/src/components/StreamConfigSheet.tsx
+
+          grep -q \
+            "handleMonitorOnly" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "live_detected_notify" \
+            src/renderer/src/locales/locales.js
+
+          echo \
+            "Checking local preview proxy..."
+
+          grep -q \
+            "startPreviewProxy" \
+            src/main/preview-proxy.ts
+
+          grep -q \
+            "START_STREAM_PREVIEW" \
+            src/main/index.ts
+
+          grep -q \
+            "startStreamPreview" \
+            src/preload/index.ts
+
+          grep -q \
+            "startStreamPreview" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "127.0.0.1" \
+            src/main/preview-proxy.ts
+
+          echo \
+            "Checking recording quality is retained..."
+
+          grep -q \
+            "getQualityRank" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "candidate_resolution" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "Douyin best stream" \
+            src/main/crawler/plugins/douyin.js
+
+          if grep -Fq \
+            "inputOptions(['-re'])" \
+            src/main/ffmpeg/record.ts
+          then
+            echo \
+              "ERROR: FFmpeg -re returned"
+
+            exit 1
+          fi
+
+          node -e "
+          const p =
+            require('./package.json');
+
+          if (
+            p.version !==
+            process.env.APP_VERSION
+          ) {
+            console.error(
+              'Version mismatch:',
+              p.version
+            );
+
+            process.exit(1);
+          }
+
+          console.log(
+            'Version:',
+            p.version
+          );
+          "
+
+          echo \
+            "All V2.5 source checks passed."
+
+      # ==========================================================
+      # Compile checks
+      # ==========================================================
+
+      - name: TypeScript check
+        run: |
+          npm run typecheck
+
+      - name: Build Electron app
+        run: |
+          npm run build
+
+      # ==========================================================
+      # Windows package
+      # ==========================================================
+
+      - name: Package Windows x64
+        run: |
+          npx electron-builder \
+            --win \
+            nsis \
+            --x64 \
+            --publish never
+
+      - name: Verify Windows installer
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $package =
+            Get-Content package.json |
+            ConvertFrom-Json
+
+          if (
+            $package.version -ne
+            $env:EXPECTED_VERSION
+          ) {
+            throw `
+              "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+          }
+
+          $installers =
+            Get-ChildItem `
+              -Path dist `
+              -Filter "*-x64.exe"
+
+          if (
+            $installers.Count -eq 0
+          ) {
+            throw `
+              "Windows x64 installer not generated."
+          }
+
+          $installers |
+            Select-Object `
+              Name,
+              Length,
+              FullName
+
+      # ==========================================================
+      # Save test branch
+      # ==========================================================
+
+      - name: Commit V2.5 tested source
+        run: |
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            package.json \
+            package-lock.json \
+            type.d.ts \
+            src/const.ts \
+            src/main/index.ts \
+            src/main/preview-proxy.ts \
+            src/preload/index.ts \
+            src/preload/index.d.ts \
+            src/renderer/src/store/useStreamConfigStore.ts \
+            src/renderer/src/components/StreamConfigSheet.tsx \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx \
+            src/renderer/src/components/StreamPreviewDialog.tsx \
+            src/renderer/src/locales/locales.js
+
+          if git diff --cached --quiet
+          then
+            echo \
+              "No source changes to commit."
+          else
+            git commit \
+              -m "Add local stream preview proxy and notify-only monitoring"
+          fi
+
+          git push \
+            --force \
+            origin \
+            douyin-v2.5-test
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-${{ inputs.version }}-douyin-v2.5-windows-x64
+          path: dist/*-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        if: always()
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "# Fideo Douyin V2.5"
+            echo
+            echo "Version: \`$APP_VERSION\`"
+            echo
+            echo "Branch: \`douyin-v2.5-test\`"
+            echo
+            echo "Changes:"
+            echo
+            echo "- Added per-stream automatic recording switch"
+            echo "- Auto record ON: monitor then record normally"
+            echo "- Auto record OFF: monitor and notify only"
+            echo "- Windows notification when streamer goes live"
+            echo "- Xizhi notification retained"
+            echo "- Existing configs default to auto record ON"
+            echo "- Added localhost preview proxy"
+            echo "- Preview proxy carries Referer / User-Agent / login cookie"
+            echo "- FLV preview uses localhost proxy"
+            echo "- HLS playlists and segments use localhost proxy"
+            echo "- Removed FLV latency-chasing setting"
+            echo "- V2.4 highest-quality recording logic retained"
+            echo "- Recording audio/video copy retained"
+            echo "- Windows x64 test installer"
+          } >> "$GITHUB_STEP_SUMMARY"
