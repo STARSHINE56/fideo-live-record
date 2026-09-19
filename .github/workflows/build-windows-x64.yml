@@ -35,23 +35,21 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
-      - name: Build Windows x64 installer
+      - name: Build application
+        run: npm run build
+
+      - name: Package Windows x64 installer
         run: npx electron-builder --win nsis --x64
 
       - name: Show build outputs
         shell: pwsh
         run: |
-          if (Test-Path dist) {
-            Get-ChildItem -Path dist -Recurse | Select-Object FullName, Length
-          } else {
-            Write-Error "dist directory not found"
-          }
+          Get-ChildItem -Path dist -Recurse | Select-Object FullName, Length
 
       - name: Upload Windows x64 installer
         uses: actions/upload-artifact@v4
         with:
           name: fideo-windows-x64-test
-          path: |
-            dist/*.exe
+          path: dist/*-x64.exe
           if-no-files-found: error
           retention-days: 7
