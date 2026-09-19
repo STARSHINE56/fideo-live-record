@@ -1,0 +1,57 @@
+name: Build Windows x64 Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+          Write-Host "Architecture: $env:PROCESSOR_ARCHITECTURE"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build Windows x64 installer
+        run: npx electron-builder --win nsis --x64
+
+      - name: Show build outputs
+        shell: pwsh
+        run: |
+          if (Test-Path dist) {
+            Get-ChildItem -Path dist -Recurse | Select-Object FullName, Length
+          } else {
+            Write-Error "dist directory not found"
+          }
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-windows-x64-test
+          path: |
+            dist/*.exe
+          if-no-files-found: error
+          retention-days: 7
