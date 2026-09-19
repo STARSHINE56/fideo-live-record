@@ -1092,7 +1092,6 @@ jobs:
           if [ -n "$LEFTOVERS" ]
           then
             echo "$LEFTOVERS"
-
             exit 1
           fi
 
@@ -1120,37 +1119,23 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
-          $package =
-            Get-Content package.json |
-            ConvertFrom-Json
+          $package = Get-Content package.json | ConvertFrom-Json
 
-          if (
-            $package.version -ne
-            $env:EXPECTED_VERSION
-          ) {
-            throw "Version mismatch"
+          if ($package.version -ne $env:EXPECTED_VERSION) {
+            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
           }
 
-          $installers =
-            Get-ChildItem \
-              -Path dist \
-              -Filter "*-x64.exe"
+          $installers = Get-ChildItem -Path dist -Filter "*-x64.exe"
 
-          if (
-            -not $installers -or
-            $installers.Count -eq 0
-          ) {
-            throw \
-              "Windows x64 installer not generated."
+          if (-not $installers -or $installers.Count -eq 0) {
+            throw "Windows x64 installer not generated."
           }
+
+          Write-Host "Generated Windows installer:"
 
           $installers |
-            Select-Object \
-              Name,
-              Length,
-              FullName |
-            Format-Table \
-              -AutoSize
+            Select-Object Name, Length, FullName |
+            Format-Table -AutoSize
 
       - name: Commit V2.8
         run: |
