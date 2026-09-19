@@ -1,0 +1,746 @@
+name: Douyin Parser Quick Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      room_url:
+        description: "抖音直播间地址，例如 https://live.douyin.com/123456"
+        required: true
+        type: string
+
+      test_branch:
+        description: "要测试的分支"
+        required: true
+        default: "douyin-parser-v2-test"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  quick-test:
+    name: Quick Douyin API Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.test_branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+
+      - name: Prepare A-Bogus signer
+        shell: bash
+        run: |
+          if [ ! -f "src/main/crawler/plugins/douyin-abogus.js" ]; then
+            echo "找不到 douyin-abogus.js"
+            exit 1
+          fi
+
+          cp \
+            src/main/crawler/plugins/douyin-abogus.js \
+            "$RUNNER_TEMP/douyin-abogus.mjs"
+
+      - name: Create quick probe
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/douyin-probe.mjs" <<'EOF'
+          import {
+            generateABogus
+          } from './douyin-abogus.mjs'
+
+          const roomUrl =
+            process.env.ROOM_URL?.trim()
+
+          if (!roomUrl) {
+            throw new Error(
+              'ROOM_URL is empty'
+            )
+          }
+
+          let parsedRoomUrl
+
+          try {
+            parsedRoomUrl =
+              new URL(roomUrl)
+          } catch {
+            throw new Error(
+              '直播间 URL 无效'
+            )
+          }
+
+          if (
+            parsedRoomUrl.hostname !==
+            'live.douyin.com'
+          ) {
+            throw new Error(
+              '快速测试目前只接受 https://live.douyin.com/数字ID'
+            )
+          }
+
+          const roomId =
+            parsedRoomUrl.pathname
+              .split('/')
+              .filter(Boolean)
+              .pop()
+
+          if (!roomId) {
+            throw new Error(
+              '没有找到直播间 ID'
+            )
+          }
+
+          const UA =
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+            'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+            'Chrome/123.0.0.0 Safari/537.36'
+
+          const baseUrl =
+            'https://live.douyin.com/'
+
+          const roomPageUrl =
+            `${baseUrl}${roomId}`
+
+          function safeText(value) {
+            if (
+              value === undefined ||
+              value === null
+            ) {
+              return ''
+            }
+
+            return String(value)
+              .replace(/\r/g, ' ')
+              .replace(/\n/g, ' ')
+              .slice(0, 300)
+          }
+
+          async function fetchWithTimeout(
+            url,
+            options = {},
+            timeout = 15000
+          ) {
+            const controller =
+              new AbortController()
+
+            const timer =
+              setTimeout(
+                () => controller.abort(),
+                timeout
+              )
+
+            try {
+              return await fetch(
+                url,
+                {
+                  ...options,
+                  signal:
+                    controller.signal
+                }
+              )
+            } finally {
+              clearTimeout(timer)
+            }
+          }
+
+          function getSetCookie(response) {
+            try {
+              if (
+                typeof response.headers
+                  .getSetCookie ===
+                'function'
+              ) {
+                return response.headers
+                  .getSetCookie()
+                  .join('; ')
+              }
+            } catch {
+              // ignore
+            }
+
+            return (
+              response.headers.get(
+                'set-cookie'
+              ) || ''
+            )
+          }
+
+          async function getBootstrapCookies() {
+            const headers = {
+              'User-Agent': UA,
+              Referer:
+                'https://live.douyin.com/'
+            }
+
+            const [
+              baseResponse,
+              roomResponse
+            ] = await Promise.all([
+              fetchWithTimeout(
+                baseUrl,
+                {
+                  headers,
+                  redirect: 'manual'
+                }
+              ),
+              fetchWithTimeout(
+                roomPageUrl,
+                {
+                  headers,
+                  redirect: 'manual'
+                }
+              )
+            ])
+
+            const baseCookie =
+              getSetCookie(
+                baseResponse
+              )
+
+            const roomCookie =
+              getSetCookie(
+                roomResponse
+              )
+
+            return {
+              cookie: [
+                baseCookie,
+                roomCookie
+              ]
+                .filter(Boolean)
+                .join('; '),
+
+              baseStatus:
+                baseResponse.status,
+
+              roomPageStatus:
+                roomResponse.status
+            }
+          }
+
+          function buildParams() {
+            return new URLSearchParams({
+              aid: '6383',
+              app_name: 'douyin_web',
+              live_id: '1',
+              device_platform: 'web',
+              language: 'zh-CN',
+              browser_language:
+                'zh-CN',
+              browser_platform:
+                'Win32',
+              browser_name:
+                'Chrome',
+              browser_version:
+                '116.0.0.0',
+              web_rid:
+                roomId,
+              is_need_double_stream:
+                'false',
+              msToken: ''
+            })
+          }
+
+          function collectUrls(room) {
+            const result = {
+              flv: [],
+              hls: []
+            }
+
+            const add = (
+              type,
+              value
+            ) => {
+              if (
+                typeof value !==
+                'string'
+              ) {
+                return
+              }
+
+              if (
+                !result[type]
+                  .includes(value)
+              ) {
+                result[type]
+                  .push(value)
+              }
+            }
+
+            const streamUrl =
+              room?.stream_url
+
+            if (!streamUrl) {
+              return result
+            }
+
+            const parseStreamData =
+              (value) => {
+                if (!value) {
+                  return
+                }
+
+                try {
+                  const parsed =
+                    typeof value ===
+                    'string'
+                      ? JSON.parse(value)
+                      : value
+
+                  const data =
+                    parsed?.data || {}
+
+                  for (
+                    const item of
+                    Object.values(data)
+                  ) {
+                    const main =
+                      item?.main
+
+                    if (!main) {
+                      continue
+                    }
+
+                    add(
+                      'flv',
+                      main.flv
+                    )
+
+                    add(
+                      'hls',
+                      main.hls
+                    )
+                  }
+                } catch {
+                  // ignore malformed data
+                }
+              }
+
+            const pullDatas =
+              streamUrl.pull_datas
+
+            if (pullDatas) {
+              for (
+                const item of
+                Object.values(
+                  pullDatas
+                )
+              ) {
+                parseStreamData(
+                  item?.stream_data
+                )
+              }
+            }
+
+            parseStreamData(
+              streamUrl
+                ?.live_core_sdk_data
+                ?.pull_data
+                ?.stream_data
+            )
+
+            for (
+              const value of
+              Object.values(
+                streamUrl
+                  ?.flv_pull_url ||
+                  {}
+              )
+            ) {
+              add(
+                'flv',
+                value
+              )
+            }
+
+            for (
+              const value of
+              Object.values(
+                streamUrl
+                  ?.hls_pull_url_map ||
+                  {}
+              )
+            ) {
+              add(
+                'hls',
+                value
+              )
+            }
+
+            return result
+          }
+
+          async function requestApi(
+            signed,
+            cookie
+          ) {
+            const params =
+              buildParams()
+
+            let aBogusLength = 0
+
+            if (signed) {
+              const query =
+                params.toString()
+
+              const aBogus =
+                generateABogus(
+                  query,
+                  UA
+                )
+
+              aBogusLength =
+                aBogus.length
+
+              params.set(
+                'a_bogus',
+                aBogus
+              )
+            }
+
+            const url =
+              `${baseUrl}webcast/room/web/enter/?${params.toString()}`
+
+            const response =
+              await fetchWithTimeout(
+                url,
+                {
+                  headers: {
+                    'User-Agent':
+                      UA,
+
+                    Referer:
+                      roomPageUrl,
+
+                    Cookie:
+                      cookie || ''
+                  }
+                }
+              )
+
+            let json = null
+            let parseError = ''
+
+            try {
+              json =
+                await response.json()
+            } catch (error) {
+              parseError =
+                error?.message ||
+                String(error)
+            }
+
+            const data =
+              json?.data
+
+            const rooms =
+              Array.isArray(
+                data?.data
+              )
+                ? data.data
+                : []
+
+            const room =
+              rooms[0]
+
+            const urls =
+              collectUrls(room)
+
+            return {
+              signed,
+              httpStatus:
+                response.status,
+
+              jsonOk:
+                Boolean(json),
+
+              parseError,
+
+              hasData:
+                Boolean(data),
+
+              roomCount:
+                rooms.length,
+
+              roomStatus:
+                room?.status,
+
+              ownerExists:
+                Boolean(
+                  room?.owner
+                ),
+
+              ownerName:
+                room?.owner
+                  ?.nickname || '',
+
+              streamUrlExists:
+                Boolean(
+                  room?.stream_url
+                ),
+
+              pullDatasExists:
+                Boolean(
+                  room
+                    ?.stream_url
+                    ?.pull_datas
+                ),
+
+              prompts:
+                safeText(
+                  data?.prompts
+                ),
+
+              flvCount:
+                urls.flv.length,
+
+              hlsCount:
+                urls.hls.length,
+
+              aBogusLength
+            }
+          }
+
+          function printResult(
+            title,
+            result
+          ) {
+            console.log('')
+            console.log(
+              `========== ${title} ==========`
+            )
+
+            console.log(
+              'HTTP:',
+              result.httpStatus
+            )
+
+            console.log(
+              'JSON:',
+              result.jsonOk
+            )
+
+            console.log(
+              'data exists:',
+              result.hasData
+            )
+
+            console.log(
+              'room count:',
+              result.roomCount
+            )
+
+            console.log(
+              'room status:',
+              result.roomStatus ??
+                'N/A'
+            )
+
+            console.log(
+              'owner exists:',
+              result.ownerExists
+            )
+
+            console.log(
+              'owner:',
+              result.ownerName ||
+                'N/A'
+            )
+
+            console.log(
+              'stream_url exists:',
+              result.streamUrlExists
+            )
+
+            console.log(
+              'pull_datas exists:',
+              result.pullDatasExists
+            )
+
+            console.log(
+              'FLV count:',
+              result.flvCount
+            )
+
+            console.log(
+              'HLS count:',
+              result.hlsCount
+            )
+
+            if (
+              result.signed
+            ) {
+              console.log(
+                'a_bogus length:',
+                result.aBogusLength
+              )
+            }
+
+            if (
+              result.prompts
+            ) {
+              console.log(
+                'prompts:',
+                result.prompts
+              )
+            }
+
+            if (
+              result.parseError
+            ) {
+              console.log(
+                'JSON parse error:',
+                result.parseError
+              )
+            }
+          }
+
+          const bootstrap =
+            await getBootstrapCookies()
+
+          console.log(
+            'Room ID:',
+            roomId
+          )
+
+          console.log(
+            'Homepage HTTP:',
+            bootstrap.baseStatus
+          )
+
+          console.log(
+            'Room page HTTP:',
+            bootstrap.roomPageStatus
+          )
+
+          console.log(
+            'Bootstrap cookie:',
+            bootstrap.cookie
+              ? 'YES'
+              : 'NO'
+          )
+
+          const unsignedResult =
+            await requestApi(
+              false,
+              bootstrap.cookie
+            )
+
+          const signedResult =
+            await requestApi(
+              true,
+              bootstrap.cookie
+            )
+
+          printResult(
+            'Unsigned Web API',
+            unsignedResult
+          )
+
+          printResult(
+            'A-Bogus Web API',
+            signedResult
+          )
+
+          const best =
+            [
+              signedResult,
+              unsignedResult
+            ].find(
+              (item) =>
+                item.roomStatus === 2 &&
+                (
+                  item.flvCount > 0 ||
+                  item.hlsCount > 0
+                )
+            )
+
+          const summaryPath =
+            process.env.GITHUB_STEP_SUMMARY
+
+          if (summaryPath) {
+            const fs =
+              await import(
+                'node:fs'
+              )
+
+            const row =
+              (name, value) =>
+                `| ${name} | ${value} |\n`
+
+            let summary =
+              '# 抖音解析快速测试\n\n'
+
+            summary +=
+              `直播间：\`${roomId}\`\n\n`
+
+            summary +=
+              '| 项目 | 未签名接口 | A-Bogus接口 |\n'
+
+            summary +=
+              '|---|---:|---:|\n'
+
+            summary +=
+              `| HTTP | ${unsignedResult.httpStatus} | ${signedResult.httpStatus} |\n`
+
+            summary +=
+              `| room count | ${unsignedResult.roomCount} | ${signedResult.roomCount} |\n`
+
+            summary +=
+              `| status | ${unsignedResult.roomStatus ?? 'N/A'} | ${signedResult.roomStatus ?? 'N/A'} |\n`
+
+            summary +=
+              `| stream_url | ${unsignedResult.streamUrlExists ? '✅' : '❌'} | ${signedResult.streamUrlExists ? '✅' : '❌'} |\n`
+
+            summary +=
+              `| FLV | ${unsignedResult.flvCount} | ${signedResult.flvCount} |\n`
+
+            summary +=
+              `| HLS | ${unsignedResult.hlsCount} | ${signedResult.hlsCount} |\n\n`
+
+            if (best) {
+              summary +=
+                '## ✅ 找到正在直播的有效直播流\n'
+            } else {
+              summary +=
+                '## ⚠️ 本次未找到有效直播流\n\n'
+
+              summary +=
+                '这不一定代表主播未开播，也可能是 GitHub Actions 网络出口被抖音风控。\n'
+            }
+
+            fs.appendFileSync(
+              summaryPath,
+              summary
+            )
+          }
+
+          if (best) {
+            console.log('')
+            console.log(
+              'RESULT: LIVE_STREAM_FOUND'
+            )
+
+            process.exit(0)
+          }
+
+          console.log('')
+          console.log(
+            'RESULT: NO_VALID_STREAM'
+          )
+
+          process.exit(2)
+          EOF
+
+      - name: Run Douyin quick test
+        shell: bash
+        env:
+          ROOM_URL: ${{ inputs.room_url }}
+        run: |
+          node \
+            "$RUNNER_TEMP/douyin-probe.mjs"
