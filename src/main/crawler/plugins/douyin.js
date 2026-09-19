@@ -323,63 +323,162 @@ function pushUnique(
   }
 }
 
-function collectMainStreams(
+
+function getStreamBitrate(
+  main
+) {
+  try {
+    const raw =
+      main?.sdk_params
+
+    const params =
+      typeof raw === 'string'
+        ? JSON.parse(raw)
+        : raw
+
+    const value =
+      Number(
+        params?.vbitrate ||
+        params?.bitrate ||
+        0
+      )
+
+    return (
+      Number.isFinite(
+        value
+      )
+        ? value
+        : 0
+    )
+  } catch {
+    return 0
+  }
+}
+
+function collectMainStreamCandidates(
   streamData
 ) {
-  const urls = []
+  const result = []
 
   if (!streamData) {
-    return urls
+    return result
   }
 
   try {
     const parsed =
-      typeof streamData === 'string'
-        ? JSON.parse(streamData)
+      typeof streamData ===
+      'string'
+        ? JSON.parse(
+            streamData
+          )
         : streamData
 
     const data =
       parsed?.data || {}
 
     for (
-      const quality of
-      Object.values(data)
+      const [
+        quality,
+        streamInfo
+      ] of Object.entries(
+        data
+      )
     ) {
       const main =
-        quality?.main
+        streamInfo?.main
 
       if (!main) {
         continue
       }
 
-      pushUnique(
-        urls,
-        main.flv
-      )
+      const bitrate =
+        getStreamBitrate(
+          main
+        )
 
-      pushUnique(
-        urls,
-        main.hls
-      )
+      if (main.flv) {
+        result.push({
+          url:
+            main.flv,
+          type:
+            'flv',
+          quality,
+          bitrate
+        })
+      }
+
+      if (main.hls) {
+        result.push({
+          url:
+            main.hls,
+          type:
+            'hls',
+          quality,
+          bitrate
+        })
+      }
     }
   } catch {
-    // ignore malformed stream data
+    // Ignore malformed stream info.
   }
 
-  return urls
+  return result
 }
 
 function collectDesktopStreams(
   room
 ) {
-  const urls = []
-
   const streamUrl =
     room?.stream_url
 
   if (!streamUrl) {
-    return urls
+    return []
   }
+
+  const candidates = []
+  const seen =
+    new Set()
+
+  const addCandidate =
+    (candidate) => {
+      const url =
+        candidate?.url
+
+      if (
+        !url ||
+        seen.has(url)
+      ) {
+        return
+      }
+
+      seen.add(url)
+
+      candidates.push({
+        url,
+        type:
+          candidate.type ||
+          'unknown',
+        quality:
+          candidate.quality ||
+          '',
+        bitrate:
+          Number(
+            candidate.bitrate ||
+            0
+          )
+      })
+    }
+
+  const addList =
+    (items) => {
+      for (
+        const item of items
+      ) {
+        addCandidate(
+          item
+        )
+      }
+    }
 
   const pullDatas =
     streamUrl.pull_datas
@@ -387,21 +486,15 @@ function collectDesktopStreams(
   if (pullDatas) {
     for (
       const item of
-      Object.values(pullDatas)
+      Object.values(
+        pullDatas
+      )
     ) {
-      const found =
-        collectMainStreams(
+      addList(
+        collectMainStreamCandidates(
           item?.stream_data
         )
-
-      for (
-        const url of found
-      ) {
-        pushUnique(
-          urls,
-          url
-        )
-      }
+      )
     }
   }
 
@@ -411,17 +504,11 @@ function collectDesktopStreams(
       ?.pull_data
       ?.stream_data
 
-  for (
-    const url of
-    collectMainStreams(
+  addList(
+    collectMainStreamCandidates(
       coreData
     )
-  ) {
-    pushUnique(
-      urls,
-      url
-    )
-  }
+  )
 
   const flvMap =
     streamUrl
@@ -429,13 +516,19 @@ function collectDesktopStreams(
 
   if (flvMap) {
     for (
-      const url of
-      Object.values(flvMap)
-    ) {
-      pushUnique(
-        urls,
+      const [
+        quality,
         url
+      ] of Object.entries(
+        flvMap
       )
+    ) {
+      addCandidate({
+        url,
+        type: 'flv',
+        quality,
+        bitrate: 0
+      })
     }
   }
 
@@ -445,18 +538,62 @@ function collectDesktopStreams(
 
   if (hlsMap) {
     for (
-      const url of
-      Object.values(hlsMap)
-    ) {
-      pushUnique(
-        urls,
+      const [
+        quality,
         url
+      ] of Object.entries(
+        hlsMap
       )
+    ) {
+      addCandidate({
+        url,
+        type: 'hls',
+        quality,
+        bitrate: 0
+      })
     }
   }
 
-  return urls
+  candidates.sort(
+    (a, b) => {
+      if (
+        b.bitrate !==
+        a.bitrate
+      ) {
+        return (
+          b.bitrate -
+          a.bitrate
+        )
+      }
+
+      if (
+        a.type ===
+          'flv' &&
+        b.type !==
+          'flv'
+      ) {
+        return -1
+      }
+
+      if (
+        b.type ===
+          'flv' &&
+        a.type !==
+          'flv'
+      ) {
+        return 1
+      }
+
+      return 0
+    }
+  )
+
+  return candidates.map(
+    (item) =>
+      item.url
+  )
 }
+
 
 function getDesktopRoom(
   data

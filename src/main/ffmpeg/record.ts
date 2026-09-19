@@ -265,9 +265,26 @@ export async function recordStream(
     // cb?.(FFMPEG_ERROR_CODE.USER_KILL_PROCESS)
     return p
   }
-  const ffmpegProcess = ffmpeg().addInput(liveUrls![Number(line)])
+  const selectedLiveUrl =
+    liveUrls![Number(line)]
 
-  ffmpegProcess.inputOptions(['-re'])
+  const ffmpegProcess =
+    ffmpeg().addInput(
+      selectedLiveUrl
+    )
+
+  if (
+    /^https?:\/\//i.test(
+      selectedLiveUrl
+    )
+  ) {
+    ffmpegProcess.inputOptions([
+      '-rw_timeout 20000000',
+      '-reconnect 1',
+      '-reconnect_streamed 1',
+      '-reconnect_delay_max 5'
+    ])
+  }
 
   setRecordStreamFfmpegProcessMap(id, ffmpegProcess)
 

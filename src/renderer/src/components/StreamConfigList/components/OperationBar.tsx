@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import UseThemeIcon from '@/components/UseThemeIcon'
 import Dialog from '@/components/Dialog'
+import StreamPreviewDialog from '@/components/StreamPreviewDialog'
 import { useStreamConfigStore } from '@/store/useStreamConfigStore'
 
 import darkPreviewIcon from '@/assets/images/dark/preview.svg'
@@ -44,6 +45,8 @@ export default function OperationBar(props: OperationBarProps) {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [isLoadingPreview, setIsLoadingPreview] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState('')
 
   const { removeStreamConfig, updateStreamConfig } = useStreamConfigStore((state) => ({
     streamConfigList: state.streamConfigList,
@@ -164,9 +167,36 @@ export default function OperationBar(props: OperationBarProps) {
       return
     }
 
-    window.api.navByDefaultBrowser(
-      `https://www.fideo.site/cn?streamUrl=${encodeURIComponent(liveUrls[streamConfig.line])}`
+    const hlsUrl =
+    liveUrls.find(
+      (url) =>
+        /\\.m3u8(?:\\?|$)/i.test(
+          url
+        )
     )
+
+  if (!hlsUrl) {
+    toast({
+      title:
+        streamConfig.title,
+      description:
+        t(
+          'stream_config.preview_hls_unavailable'
+        ),
+      variant:
+        'destructive'
+    })
+
+    return
+  }
+
+  setPreviewUrl(
+    hlsUrl
+  )
+
+  setPreviewOpen(
+    true
+  )
   }
 
   useEffect(() => {
@@ -238,7 +268,23 @@ export default function OperationBar(props: OperationBarProps) {
         />
       </div>
 
-      <StreamConfigSheet
+      <StreamPreviewDialog
+      open={previewOpen}
+      onOpenChange={
+        setPreviewOpen
+      }
+      title={
+        streamConfig.title
+      }
+      url={previewUrl}
+      errorText={
+        t(
+          'stream_config.preview_failed'
+        )
+      }
+    />
+
+    <StreamConfigSheet
         streamConfig={streamConfig}
         setSheetOpen={setSheetOpen}
         sheetOpen={sheetOpen}

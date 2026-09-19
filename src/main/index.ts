@@ -413,7 +413,15 @@ app.whenReady().then(async () => {
     }
     streamConfig.liveUrls = liveUrls
 
-    const { code: recordStreamCode } = await recordStream(
+  if (
+    isDouyinUrl(
+      roomUrl
+    )
+  ) {
+    streamConfig.line = '0'
+  }
+
+  const { code: recordStreamCode } = await recordStream(
       streamConfig,
       writeLog,
       (code: number, errMsg?: string) => {
