@@ -1,0 +1,2772 @@
+name: Douyin V2.7 UI Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "测试版本号，例如 1.1.8"
+        required: true
+        default: "1.1.8"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Remove Preview And Optimize UI
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout V2.6.2 source
+        uses: actions/checkout@v4
+        with:
+          ref: douyin-v2.6.2-test
+          fetch-depth: 0
+
+      - name: Create V2.7 test branch
+        run: |
+          git switch -C douyin-v2.7-ui-test
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      # ============================================================
+      # 删除预览功能
+      # ============================================================
+
+      - name: Remove preview backend and IPC
+        run: |
+          cat > "$RUNNER_TEMP/remove-preview.cjs" <<'NODE'
+          const fs = require('fs')
+
+          function read(path) {
+            return fs.readFileSync(path, 'utf8')
+          }
+
+          function write(path, text) {
+            fs.writeFileSync(path, text, 'utf8')
+          }
+
+          // --------------------------------------------------------
+          // const.ts
+          // --------------------------------------------------------
+
+          {
+            const path = 'src/const.ts'
+            let text = read(path)
+
+            text = text
+              .replace(
+                /^\s*export const START_STREAM_PREVIEW = 'START_STREAM_PREVIEW'\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*export const STOP_STREAM_PREVIEW = 'STOP_STREAM_PREVIEW'\s*$/gm,
+                ''
+              )
+
+            write(path, text)
+          }
+
+          // --------------------------------------------------------
+          // main/index.ts
+          // --------------------------------------------------------
+
+          {
+            const path = 'src/main/index.ts'
+            let text = read(path)
+
+            text = text
+              .replace(
+                /^\s*START_STREAM_PREVIEW,\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*STOP_STREAM_PREVIEW,\s*$/gm,
+                ''
+              )
+
+            text = text.replace(
+              /\s*import\s*\{\s*startPreviewTranscoder,\s*stopPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*/m,
+              '\n'
+            )
+
+            const marker =
+              text.indexOf(
+                'START_STREAM_PREVIEW,'
+              )
+
+            if (marker >= 0) {
+              const start =
+                text.lastIndexOf(
+                  'ipcMain.handle(',
+                  marker
+                )
+
+              const end =
+                text.indexOf(
+                  'ipcMain.handle(START_STREAM_RECORD',
+                  marker
+                )
+
+              if (
+                start >= 0 &&
+                end > start
+              ) {
+                text =
+                  text.slice(0, start) +
+                  text.slice(end)
+              }
+            }
+
+            text = text
+              .replace(
+                /^\s*void stopPreviewTranscoder\(\)\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*await stopPreviewTranscoder\(\)\s*$/gm,
+                ''
+              )
+
+            write(path, text)
+          }
+
+          // --------------------------------------------------------
+          // preload/index.ts
+          // --------------------------------------------------------
+
+          {
+            const path = 'src/preload/index.ts'
+            let text = read(path)
+
+            text = text
+              .replace(
+                /^\s*START_STREAM_PREVIEW,\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*STOP_STREAM_PREVIEW,\s*$/gm,
+                ''
+              )
+
+            const start =
+              text.indexOf(
+                'startStreamPreview:'
+              )
+
+            const end =
+              text.indexOf(
+                'navByDefaultBrowser:',
+                start
+              )
+
+            if (
+              start >= 0 &&
+              end > start
+            ) {
+              const lineStart =
+                text.lastIndexOf(
+                  '\n',
+                  start
+                ) + 1
+
+              text =
+                text.slice(
+                  0,
+                  lineStart
+                ) +
+                text.slice(
+                  end
+                )
+            }
+
+            write(path, text)
+          }
+
+          // --------------------------------------------------------
+          // preload/index.d.ts
+          // --------------------------------------------------------
+
+          {
+            const path =
+              'src/preload/index.d.ts'
+
+            let text =
+              read(path)
+
+            const start =
+              text.indexOf(
+                'startStreamPreview:'
+              )
+
+            const end =
+              text.indexOf(
+                'startStreamRecord:',
+                start
+              )
+
+            if (
+              start >= 0 &&
+              end > start
+            ) {
+              const lineStart =
+                text.lastIndexOf(
+                  '\n',
+                  start
+                ) + 1
+
+              text =
+                text.slice(
+                  0,
+                  lineStart
+                ) +
+                text.slice(
+                  end
+                )
+            }
+
+            write(
+              path,
+              text
+            )
+          }
+
+          console.log(
+            'Preview IPC removed.'
+          )
+          NODE
+
+          node "$RUNNER_TEMP/remove-preview.cjs"
+
+      # ============================================================
+      # OperationBar：删除预览按钮并整理操作区
+      # ============================================================
+
+      - name: Rewrite operation bar
+        run: |
+          cat > src/renderer/src/components/StreamConfigList/components/OperationBar.tsx <<'TS'
+          import {
+            useEffect,
+            useRef,
+            useState
+          } from 'react'
+
+          import {
+            useTranslation
+          } from 'react-i18next'
+
+          import UseThemeIcon from '@/components/UseThemeIcon'
+          import Dialog from '@/components/Dialog'
+
+          import {
+            useStreamConfigStore
+          } from '@/store/useStreamConfigStore'
+
+          import darkPlayIcon from '@/assets/images/dark/play.svg'
+          import lightPlayIcon from '@/assets/images/light/play.svg'
+
+          import darkPauseIcon from '@/assets/images/dark/pause.svg'
+          import lightPauseIcon from '@/assets/images/light/pause.svg'
+
+          import darkSettingIcon from '@/assets/images/dark/setting.svg'
+          import lightSettingIcon from '@/assets/images/light/setting.svg'
+
+          import darkDeleteIcon from '@/assets/images/dark/close.svg'
+          import lightDeleteIcon from '@/assets/images/light/close.svg'
+
+          import {
+            StreamStatus,
+            useXizhiToPushNotification
+          } from '@renderer/lib/utils'
+
+          import StreamConfigSheet from '@renderer/components/StreamConfigSheet'
+
+          import {
+            useToast
+          } from '@renderer/hooks/useToast'
+
+          import {
+            CRAWLER_ERROR_CODE,
+            SUCCESS_CODE,
+            UNKNOWN_CODE,
+            crawlerErrorCodeToI18nMessage,
+            FFMPEG_ERROR_CODE
+          } from '../../../../../code'
+
+          import {
+            RECORD_END_NOT_USER_STOP
+          } from '../../../../../const'
+
+          import emitter from '@/lib/bus'
+
+          import {
+            useDefaultSettingsStore
+          } from '../../../store/useDefaultSettingsStore'
+
+          interface OperationBarProps {
+            streamConfig: IStreamConfig
+          }
+
+          export default function OperationBar(
+            props: OperationBarProps
+          ) {
+            const {
+              streamConfig
+            } = props
+
+            const {
+              t
+            } = useTranslation()
+
+            const {
+              toast
+            } = useToast()
+
+            const timer =
+              useRef<NodeJS.Timeout>()
+
+            const liveNotifiedRef =
+              useRef(false)
+
+            const [
+              sheetOpen,
+              setSheetOpen
+            ] =
+              useState(false)
+
+            const [
+              deleteDialogOpen,
+              setDeleteDialogOpen
+            ] =
+              useState(false)
+
+            const defaultSettingsConfig =
+              useDefaultSettingsStore(
+                (
+                  state
+                ) =>
+                  state.defaultSettingsConfig
+              )
+
+            const {
+              removeStreamConfig,
+              updateStreamConfig
+            } =
+              useStreamConfigStore(
+                (
+                  state
+                ) => ({
+                  removeStreamConfig:
+                    state.removeStreamConfig,
+
+                  updateStreamConfig:
+                    state.updateStreamConfig
+                })
+              )
+
+            const handleConfirmDelete =
+              async () => {
+                await removeStreamConfig(
+                  streamConfig.id
+                )
+
+                setDeleteDialogOpen(
+                  false
+                )
+              }
+
+            const scheduleMonitorOnly =
+              () => {
+                if (
+                  timer.current
+                ) {
+                  clearTimeout(
+                    timer.current
+                  )
+                }
+
+                timer.current =
+                  setTimeout(
+                    () => {
+                      void handleMonitorOnly(
+                        false
+                      )
+                    },
+
+                    1000 *
+                      streamConfig.interval
+                  )
+              }
+
+            const handleMonitorOnly =
+              async (
+                isFirst =
+                  true
+              ) => {
+                if (isFirst) {
+                  liveNotifiedRef.current =
+                    false
+
+                  await updateStreamConfig(
+                    {
+                      ...streamConfig,
+
+                      status:
+                        StreamStatus.MONITORING
+                    },
+
+                    streamConfig.id
+                  )
+                }
+
+                const result =
+                  await window.api
+                    .getLiveUrls({
+                      roomUrl:
+                        streamConfig.roomUrl,
+
+                      cookie:
+                        streamConfig.cookie,
+
+                      proxy:
+                        streamConfig.proxy,
+
+                      title:
+                        streamConfig.title
+                    })
+                    .catch(
+                      () => ({
+                        code:
+                          UNKNOWN_CODE,
+
+                        liveUrls:
+                          [] as string[]
+                      })
+                    )
+
+                const latest =
+                  useStreamConfigStore
+                    .getState()
+                    .streamConfigList
+                    .find(
+                      (
+                        item
+                      ) =>
+                        item.id ===
+                        streamConfig.id
+                    )
+
+                if (
+                  !latest ||
+                  latest.status ===
+                    StreamStatus.NOT_STARTED
+                ) {
+                  return
+                }
+
+                if (
+                  result.code ===
+                    SUCCESS_CODE &&
+                  Array.isArray(
+                    result.liveUrls
+                  ) &&
+                  result.liveUrls.length >
+                    0
+                ) {
+                  if (
+                    !liveNotifiedRef.current
+                  ) {
+                    liveNotifiedRef.current =
+                      true
+
+                    const message =
+                      t(
+                        'stream_config.live_detected_notify',
+                        {
+                          title:
+                            streamConfig.title
+                        }
+                      )
+
+                    window.api.showNotification(
+                      t(
+                        'stream_config.live_detected'
+                      ),
+
+                      message
+                    )
+
+                    toast({
+                      title:
+                        streamConfig.title,
+
+                      description:
+                        t(
+                          'stream_config.live_detected'
+                        )
+                    })
+
+                    if (
+                      defaultSettingsConfig
+                        .xizhiKey
+                    ) {
+                      useXizhiToPushNotification({
+                        key:
+                          defaultSettingsConfig
+                            .xizhiKey,
+
+                        title:
+                          streamConfig.title,
+
+                        content:
+                          t(
+                            'stream_config.live_detected'
+                          )
+                      })
+                    }
+                  }
+
+                  scheduleMonitorOnly()
+
+                  return
+                }
+
+                if (
+                  result.code ===
+                  CRAWLER_ERROR_CODE.NOT_URLS
+                ) {
+                  liveNotifiedRef.current =
+                    false
+
+                  scheduleMonitorOnly()
+
+                  return
+                }
+
+                if (
+                  result.code ===
+                  UNKNOWN_CODE
+                ) {
+                  scheduleMonitorOnly()
+
+                  return
+                }
+
+                if (isFirst) {
+                  const errMessage =
+                    crawlerErrorCodeToI18nMessage(
+                      result.code,
+                      'error.get_line.'
+                    )
+
+                  toast({
+                    title:
+                      streamConfig.title,
+
+                    description:
+                      t(
+                        errMessage
+                      ),
+
+                    variant:
+                      'destructive'
+                  })
+                }
+
+                scheduleMonitorOnly()
+              }
+
+            const handleStartRecord =
+              async (
+                isFirst =
+                  true
+              ) => {
+                if (isFirst) {
+                  await updateStreamConfig(
+                    {
+                      ...streamConfig,
+
+                      status:
+                        StreamStatus.PREPARING_TO_RECORD
+                    },
+
+                    streamConfig.id
+                  )
+                }
+
+                const {
+                  code
+                } =
+                  await window.api
+                    .startStreamRecord(
+                      JSON.stringify(
+                        streamConfig
+                      )
+                    )
+                    .catch(
+                      () => ({
+                        code:
+                          UNKNOWN_CODE
+                      })
+                    )
+
+                const currentStatus =
+                  useStreamConfigStore
+                    .getState()
+                    .streamConfigList
+                    .find(
+                      (
+                        item
+                      ) =>
+                        item.id ===
+                        streamConfig.id
+                    )
+                    ?.status
+
+                if (
+                  currentStatus ===
+                  StreamStatus.NOT_STARTED
+                ) {
+                  return
+                }
+
+                if (
+                  code ===
+                  SUCCESS_CODE
+                ) {
+                  await updateStreamConfig(
+                    {
+                      ...streamConfig,
+
+                      status:
+                        StreamStatus.RECORDING
+                    },
+
+                    streamConfig.id
+                  )
+
+                  toast({
+                    title:
+                      streamConfig.title,
+
+                    description:
+                      t(
+                        'start_record'
+                      )
+                  })
+
+                  if (
+                    defaultSettingsConfig
+                      .xizhiKey
+                  ) {
+                    useXizhiToPushNotification({
+                      key:
+                        defaultSettingsConfig
+                          .xizhiKey,
+
+                      title:
+                        streamConfig.title,
+
+                      content:
+                        t(
+                          'start_record'
+                        )
+                    })
+                  }
+
+                  return
+                }
+
+                if (
+                  code ===
+                    CRAWLER_ERROR_CODE.NOT_URLS ||
+                  code ===
+                    UNKNOWN_CODE
+                ) {
+                  if (
+                    timer.current
+                  ) {
+                    clearTimeout(
+                      timer.current
+                    )
+                  }
+
+                  timer.current =
+                    setTimeout(
+                      () => {
+                        void handleStartRecord(
+                          false
+                        )
+                      },
+
+                      1000 *
+                        streamConfig.interval
+                    )
+
+                  if (isFirst) {
+                    toast({
+                      title:
+                        streamConfig.title,
+
+                      description:
+                        t(
+                          'error.start_record.not_urls'
+                        )
+                    })
+
+                    if (
+                      defaultSettingsConfig
+                        .xizhiKey
+                    ) {
+                      useXizhiToPushNotification({
+                        key:
+                          defaultSettingsConfig
+                            .xizhiKey,
+
+                        title:
+                          streamConfig.title,
+
+                        content:
+                          t(
+                            'error.start_record.not_urls'
+                          )
+                      })
+                    }
+                  }
+
+                  await updateStreamConfig(
+                    {
+                      ...streamConfig,
+
+                      status:
+                        StreamStatus.MONITORING
+                    },
+
+                    streamConfig.id
+                  )
+
+                  return
+                }
+
+                if (
+                  Object.values(
+                    FFMPEG_ERROR_CODE
+                  ).includes(
+                    code
+                  )
+                ) {
+                  return
+                }
+
+                const errMessage =
+                  crawlerErrorCodeToI18nMessage(
+                    code,
+                    'error.start_record.'
+                  )
+
+                await updateStreamConfig(
+                  {
+                    ...streamConfig,
+
+                    status:
+                      StreamStatus.NOT_STARTED
+                  },
+
+                  streamConfig.id
+                )
+
+                toast({
+                  title:
+                    streamConfig.title,
+
+                  description:
+                    t(
+                      errMessage
+                    ),
+
+                  variant:
+                    'destructive'
+                })
+              }
+
+            const handlePlayClick =
+              () => {
+                if (
+                  streamConfig.autoRecord ===
+                  false
+                ) {
+                  void handleMonitorOnly(
+                    true
+                  )
+
+                  return
+                }
+
+                void handleStartRecord(
+                  true
+                )
+              }
+
+            const handlePauseClick =
+              async () => {
+                if (
+                  timer.current
+                ) {
+                  clearTimeout(
+                    timer.current
+                  )
+                }
+
+                liveNotifiedRef.current =
+                  false
+
+                if (
+                  streamConfig.autoRecord ===
+                  false
+                ) {
+                  await updateStreamConfig(
+                    {
+                      ...streamConfig,
+
+                      status:
+                        StreamStatus.NOT_STARTED
+                    },
+
+                    streamConfig.id
+                  )
+
+                  return
+                }
+
+                await window.api
+                  .stopStreamRecord(
+                    streamConfig.id
+                  )
+              }
+
+            useEffect(
+              () => {
+                const handleRecordEndNotUserStop =
+                  async (
+                    id: string
+                  ) => {
+                    if (
+                      id !==
+                      streamConfig.id
+                    ) {
+                      return
+                    }
+
+                    if (
+                      timer.current
+                    ) {
+                      clearTimeout(
+                        timer.current
+                      )
+                    }
+
+                    timer.current =
+                      setTimeout(
+                        () => {
+                          handlePlayClick()
+                        },
+
+                        2000
+                      )
+                  }
+
+                emitter.on(
+                  RECORD_END_NOT_USER_STOP,
+
+                  handleRecordEndNotUserStop as any
+                )
+
+                return () => {
+                  emitter.off(
+                    RECORD_END_NOT_USER_STOP,
+
+                    handleRecordEndNotUserStop as any
+                  )
+                }
+              },
+
+              [
+                streamConfig
+              ]
+            )
+
+            useEffect(
+              () => {
+                return () => {
+                  if (
+                    timer.current
+                  ) {
+                    clearTimeout(
+                      timer.current
+                    )
+                  }
+                }
+              },
+
+              []
+            )
+
+            const isStopped =
+              streamConfig.status ===
+              StreamStatus.NOT_STARTED
+
+            return (
+              <>
+                <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-background/80 p-1 shadow-sm">
+                  {isStopped ? (
+                    <UseThemeIcon
+                      className="h-[19px] w-[19px] cursor-pointer select-none"
+                      dark={
+                        darkPlayIcon
+                      }
+                      light={
+                        lightPlayIcon
+                      }
+                      handleClick={
+                        handlePlayClick
+                      }
+                      id={
+                        streamConfig.id +
+                        '_play'
+                      }
+                    />
+                  ) : (
+                    <UseThemeIcon
+                      className="h-[19px] w-[19px] cursor-pointer select-none"
+                      dark={
+                        darkPauseIcon
+                      }
+                      light={
+                        lightPauseIcon
+                      }
+                      handleClick={
+                        handlePauseClick
+                      }
+                      id={
+                        streamConfig.id +
+                        '_pause'
+                      }
+                    />
+                  )}
+
+                  <UseThemeIcon
+                    className="h-[19px] w-[19px] cursor-pointer select-none"
+                    dark={
+                      darkSettingIcon
+                    }
+                    light={
+                      lightSettingIcon
+                    }
+                    handleClick={
+                      () =>
+                        setSheetOpen(
+                          true
+                        )
+                    }
+                    tooltipContent={
+                      t(
+                        'stream_config.edit'
+                      )
+                    }
+                  />
+
+                  <UseThemeIcon
+                    className="h-[19px] w-[19px] cursor-pointer select-none"
+                    dark={
+                      darkDeleteIcon
+                    }
+                    light={
+                      lightDeleteIcon
+                    }
+                    handleClick={
+                      () =>
+                        setDeleteDialogOpen(
+                          true
+                        )
+                    }
+                  />
+                </div>
+
+                <StreamConfigSheet
+                  streamConfig={
+                    streamConfig
+                  }
+                  setSheetOpen={
+                    setSheetOpen
+                  }
+                  sheetOpen={
+                    sheetOpen
+                  }
+                  type="edit"
+                />
+
+                <Dialog
+                  title={
+                    t(
+                      'stream_config.confirm_delete',
+                      {
+                        title:
+                          streamConfig.title
+                      }
+                    )
+                  }
+                  btnText={
+                    t(
+                      'stream_config.delete'
+                    )
+                  }
+                  dialogOpen={
+                    deleteDialogOpen
+                  }
+                  onOpenChange={
+                    setDeleteDialogOpen
+                  }
+                  handleBtnClick={
+                    handleConfirmDelete
+                  }
+                  variant="destructive"
+                />
+              </>
+            )
+          }
+          TS
+
+      # ============================================================
+      # 状态进度组件
+      # ============================================================
+
+      - name: Rewrite status progress
+        run: |
+          cat > src/renderer/src/components/StreamConfigList/components/Progress.tsx <<'TS'
+          import {
+            StreamStatus
+          } from '@renderer/lib/utils'
+
+          interface ProgressProps {
+            status: number
+          }
+
+          export default function Progress(
+            {
+              status
+            }: ProgressProps
+          ) {
+            if (
+              status ===
+              StreamStatus.NOT_STARTED
+            ) {
+              return (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted" />
+              )
+            }
+
+            if (
+              status ===
+              StreamStatus.MONITORING
+            ) {
+              return (
+                <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="absolute left-[2px] top-0 h-full w-[48px] rounded-full bg-blue-500 animate-progress" />
+                </div>
+              )
+            }
+
+            if (
+              status ===
+              StreamStatus.PREPARING_TO_RECORD
+            ) {
+              return (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-amber-500" />
+                </div>
+              )
+            }
+
+            if (
+              status ===
+              StreamStatus.RECORDING
+            ) {
+              return (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-red-500/20">
+                  <div className="h-full w-full animate-pulse rounded-full bg-red-500" />
+                </div>
+              )
+            }
+
+            return (
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-purple-500/20">
+                <div className="h-full w-3/4 animate-pulse rounded-full bg-purple-500" />
+              </div>
+            )
+          }
+          TS
+
+      # ============================================================
+      # 重新设计录制卡片
+      # ============================================================
+
+      - name: Rewrite stream cards
+        run: |
+          cat > src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx <<'TS'
+          import {
+            useTranslation
+          } from 'react-i18next'
+
+          import {
+            Card,
+            CardContent,
+            CardDescription,
+            CardTitle,
+            CardHeader
+          } from '@/shadcn/ui/card'
+
+          import {
+            Badge
+          } from '@/shadcn/ui/badge'
+
+          import {
+            MoveCardDropdownMenu
+          } from './MoveCardDropDownMenu'
+
+          import Progress from '@/components/StreamConfigList/components/Progress'
+          import OperationBar from '@/components/StreamConfigList/components/OperationBar'
+
+          import {
+            StreamStatus
+          } from '@renderer/lib/utils'
+
+          import {
+            useFfmpegProgressInfoStore
+          } from '@renderer/store/useFfmpegProgressInfoStore'
+
+          import {
+            useNavSelectedStatusStore
+          } from '@renderer/store/useNavSelectedStatusStore'
+
+          interface StreamConfigCardProps {
+            streamConfig: IStreamConfig
+          }
+
+          const statusLocale:
+            Record<number, string> = {
+              0:
+                'stream_config.not_started',
+
+              1:
+                'stream_config.preparing_to_record',
+
+              2:
+                'stream_config.monitoring',
+
+              3:
+                'stream_config.recording',
+
+              4:
+                'stream_config.video_format_conversion'
+            }
+
+          const statusStyle:
+            Record<number, string> = {
+              0:
+                'border-border bg-muted/50 text-muted-foreground',
+
+              1:
+                'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
+
+              2:
+                'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300',
+
+              3:
+                'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300',
+
+              4:
+                'border-purple-300 bg-purple-50 text-purple-700 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-300'
+            }
+
+          function formatSize(
+            targetSize?: number
+          ) {
+            if (
+              !targetSize
+            ) {
+              return '--'
+            }
+
+            return (
+              (
+                targetSize /
+                1024
+              ).toFixed(
+                1
+              ) + ' MB'
+            )
+          }
+
+          export default function StreamConfigCard(
+            {
+              streamConfig
+            }: StreamConfigCardProps
+          ) {
+            const {
+              t
+            } =
+              useTranslation()
+
+            const ffmpegProgressInfo =
+              useFfmpegProgressInfoStore(
+                (
+                  state
+                ) =>
+                  state.ffmpegProgressInfo
+              )
+
+            const navSelectedStatus =
+              useNavSelectedStatusStore(
+                (
+                  state
+                ) =>
+                  state.navSelectedStatus
+              )
+
+            const progress =
+              ffmpegProgressInfo[
+                streamConfig.id
+              ]
+
+            const handleRoomUrlClick =
+              () => {
+                window.api
+                  .navByDefaultBrowser(
+                    streamConfig.roomUrl
+                  )
+              }
+
+            const showSize =
+              streamConfig.segmentTime ===
+                '0' ||
+              streamConfig.segmentTime ===
+                ''
+
+            return (
+              <Card className="stream-card overflow-hidden border bg-card/95 shadow-sm">
+                <CardHeader className="space-y-3 pb-4">
+                  <div className="flex min-w-0 items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <CardTitle
+                          id={
+                            streamConfig.id
+                          }
+                          className="max-w-full truncate text-base font-semibold leading-6"
+                        >
+                          {
+                            streamConfig.title
+                          }
+                        </CardTitle>
+
+                        <Badge
+                          variant="outline"
+                          className={
+                            statusStyle[
+                              streamConfig.status
+                            ] ||
+                            statusStyle[
+                              StreamStatus.NOT_STARTED
+                            ]
+                          }
+                        >
+                          {t(
+                            statusLocale[
+                              streamConfig.status
+                            ] ||
+                              statusLocale[
+                                StreamStatus.NOT_STARTED
+                              ]
+                          )}
+                        </Badge>
+
+                        <Badge
+                          variant="outline"
+                          className={
+                            streamConfig.autoRecord
+                              ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                              : 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300'
+                          }
+                        >
+                          {streamConfig.autoRecord
+                            ? t(
+                                'stream_config.auto_record'
+                              )
+                            : t(
+                                'stream_config.notify_only'
+                              )}
+                        </Badge>
+                      </div>
+
+                      <CardDescription
+                        className="mt-2 flex min-w-0 items-center gap-1 text-xs"
+                      >
+                        <span className="shrink-0">
+                          {t(
+                            'stream_config.room_url'
+                          )}
+                          :
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={
+                            handleRoomUrlClick
+                          }
+                          className="min-w-0 truncate text-left underline underline-offset-2 hover:text-foreground"
+                        >
+                          {
+                            streamConfig.roomUrl
+                          }
+                        </button>
+                      </CardDescription>
+                    </div>
+
+                    <OperationBar
+                      streamConfig={
+                        streamConfig
+                      }
+                    />
+                  </div>
+                </CardHeader>
+
+                <CardContent className="space-y-3 pt-0">
+                  <Progress
+                    status={
+                      streamConfig.status
+                    }
+                  />
+
+                  <div className="flex min-h-[28px] flex-wrap items-center justify-between gap-x-5 gap-y-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-5">
+                      <div className="flex items-center gap-1.5">
+                        <span>
+                          ⏱
+                        </span>
+
+                        <span>
+                          {progress?.timemark ||
+                            '--:--:--'}
+                        </span>
+                      </div>
+
+                      {showSize && (
+                        <div className="flex items-center gap-1.5">
+                          <span>
+                            ◫
+                          </span>
+
+                          <span>
+                            {formatSize(
+                              progress?.targetSize
+                            )}
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-1.5">
+                        <span>
+                          ⟳
+                        </span>
+
+                        <span>
+                          {streamConfig.interval}s
+                        </span>
+                      </div>
+                    </div>
+
+                    {navSelectedStatus ===
+                      '-1' && (
+                      <MoveCardDropdownMenu
+                        streamConfig={
+                          streamConfig
+                        }
+                      />
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          }
+          TS
+
+      # ============================================================
+      # 主任务列表：统计、空状态、间距
+      # ============================================================
+
+      - name: Rewrite stream list layout
+        run: |
+          cat > src/renderer/src/components/StreamConfigList/StreamConfigList.tsx <<'TS'
+          import {
+            useMemo
+          } from 'react'
+
+          import {
+            useMount
+          } from 'react-use'
+
+          import {
+            useTranslation
+          } from 'react-i18next'
+
+          import StreamConfigCard from './components/StreamConfigCard'
+
+          import {
+            SUCCESS_CODE,
+            FFMPEG_ERROR_CODE,
+            errorCodeToI18nMessage,
+            UNKNOWN_CODE
+          } from '../../../../code'
+
+          import emitter from '@/lib/bus'
+
+          import {
+            RECORD_END_NOT_USER_STOP
+          } from '../../../../const'
+
+          import {
+            useStreamConfigStore
+          } from '@/store/useStreamConfigStore'
+
+          import {
+            useDefaultSettingsStore
+          } from '@renderer/store/useDefaultSettingsStore'
+
+          import {
+            useNavSelectedStatusStore
+          } from '@renderer/store/useNavSelectedStatusStore'
+
+          import {
+            useFfmpegProgressInfoStore
+          } from '@/store/useFfmpegProgressInfoStore'
+
+          import {
+            StreamStatus,
+            useXizhiToPushNotification
+          } from '@renderer/lib/utils'
+
+          import {
+            useToast
+          } from '@renderer/hooks/useToast'
+
+          const unknownErrorRetryTimesMap:
+            Record<string, number> = {}
+
+          const maxRetryTimes =
+            3
+
+          const alreadyCallbackOneTimeSet =
+            new Set<string>()
+
+          export default function StreamConfigList() {
+            const {
+              t
+            } =
+              useTranslation()
+
+            const {
+              toast
+            } =
+              useToast()
+
+            const navSelectedStatus =
+              useNavSelectedStatusStore(
+                (
+                  state
+                ) =>
+                  state.navSelectedStatus
+              )
+
+            const streamConfigList =
+              useStreamConfigStore(
+                (
+                  state
+                ) =>
+                  state.streamConfigList
+              )
+
+            const {
+              updateFfmpegProgressInfo
+            } =
+              useFfmpegProgressInfoStore(
+                (
+                  state
+                ) =>
+                  state
+              )
+
+            const filteredList =
+              useMemo(
+                () => {
+                  if (
+                    navSelectedStatus ===
+                    '-1'
+                  ) {
+                    return streamConfigList
+                  }
+
+                  return streamConfigList.filter(
+                    (
+                      item
+                    ) =>
+                      item.status ===
+                      Number(
+                        navSelectedStatus
+                      )
+                  )
+                },
+
+                [
+                  streamConfigList,
+                  navSelectedStatus
+                ]
+              )
+
+            const monitoringCount =
+              streamConfigList.filter(
+                (
+                  item
+                ) =>
+                  item.status ===
+                  StreamStatus.MONITORING
+              ).length
+
+            const recordingCount =
+              streamConfigList.filter(
+                (
+                  item
+                ) =>
+                  item.status ===
+                  StreamStatus.RECORDING
+              ).length
+
+            useMount(
+              () => {
+                window.api.onFFmpegProgressInfo(
+                  (
+                    progressInfo
+                  ) => {
+                    updateFfmpegProgressInfo(
+                      progressInfo
+                    )
+                  }
+                )
+
+                window.api.onStreamRecordEnd(
+                  async (
+                    id,
+                    code,
+                    errMsg
+                  ) => {
+                    const {
+                      streamConfigList,
+                      updateStreamConfig
+                    } =
+                      useStreamConfigStore
+                        .getState()
+
+                    const xiZhiKey =
+                      useDefaultSettingsStore
+                        .getState()
+                        .defaultSettingsConfig
+                        .xizhiKey
+
+                    const index =
+                      streamConfigList
+                        .findIndex(
+                          (
+                            streamConfig
+                          ) =>
+                            streamConfig.id ===
+                            id
+                        )
+
+                    if (
+                      index ===
+                      -1
+                    ) {
+                      return
+                    }
+
+                    const streamConfig =
+                      streamConfigList[
+                        index
+                      ]
+
+                    const isStopByUser =
+                      code ===
+                      FFMPEG_ERROR_CODE.USER_KILL_PROCESS
+
+                    const isStopByStreamEnd =
+                      code ===
+                      SUCCESS_CODE
+
+                    const isStopByResolutionChange =
+                      code ===
+                      FFMPEG_ERROR_CODE.RESOLUTION_CHANGE
+
+                    let message =
+                      ''
+
+                    if (
+                      isStopByUser
+                    ) {
+                      message =
+                        'user_stop_record'
+                    }
+
+                    if (
+                      isStopByStreamEnd
+                    ) {
+                      message =
+                        'stream_end_stop_record'
+                    }
+
+                    if (
+                      isStopByUser &&
+                      (
+                        streamConfig.status ===
+                          StreamStatus.PREPARING_TO_RECORD ||
+                        streamConfig.status ===
+                          StreamStatus.MONITORING
+                      )
+                    ) {
+                      await updateStreamConfig(
+                        {
+                          ...streamConfig,
+
+                          status:
+                            StreamStatus.NOT_STARTED
+                        },
+
+                        streamConfig.id
+                      )
+
+                      toast({
+                        title:
+                          streamConfig.title,
+
+                        description:
+                          code ===
+                          UNKNOWN_CODE
+                            ? t(
+                                message
+                              ) +
+                              String(
+                                errMsg ||
+                                  ''
+                              )
+                            : t(
+                                message
+                              )
+                      })
+
+                      return
+                    }
+
+                    if (
+                      !alreadyCallbackOneTimeSet.has(
+                        id
+                      )
+                    ) {
+                      alreadyCallbackOneTimeSet.add(
+                        id
+                      )
+
+                      if (
+                        streamConfig.status ===
+                          StreamStatus.RECORDING &&
+                        streamConfig.convertToMP4
+                      ) {
+                        await updateStreamConfig(
+                          {
+                            ...streamConfig,
+
+                            status:
+                              StreamStatus.VIDEO_FORMAT_CONVERSION
+                          },
+
+                          streamConfig.id
+                        )
+                      }
+
+                      return
+                    }
+
+                    alreadyCallbackOneTimeSet.delete(
+                      id
+                    )
+
+                    unknownErrorRetryTimesMap[
+                      id
+                    ] =
+                      unknownErrorRetryTimesMap[
+                        id
+                      ] ||
+                      0
+
+                    unknownErrorRetryTimesMap[
+                      id
+                    ] +=
+                      1
+
+                    if (
+                      !message
+                    ) {
+                      message =
+                        errorCodeToI18nMessage(
+                          code,
+                          'error.stop_record.'
+                        )
+                    }
+
+                    const description =
+                      code ===
+                      UNKNOWN_CODE
+                        ? t(
+                            message
+                          ) +
+                          String(
+                            errMsg ||
+                              ''
+                          )
+                        : t(
+                            message
+                          )
+
+                    toast({
+                      title:
+                        streamConfig.title,
+
+                      description
+                    })
+
+                    if (
+                      !isStopByUser &&
+                      xiZhiKey
+                    ) {
+                      useXizhiToPushNotification({
+                        key:
+                          xiZhiKey,
+
+                        title:
+                          streamConfig.title,
+
+                        content:
+                          description
+                      })
+                    }
+
+                    await updateStreamConfig(
+                      {
+                        ...streamConfig,
+
+                        status:
+                          StreamStatus.NOT_STARTED
+                      },
+
+                      streamConfig.id
+                    )
+
+                    if (
+                      isStopByUser ||
+                      unknownErrorRetryTimesMap[
+                        id
+                      ] >=
+                        maxRetryTimes
+                    ) {
+                      unknownErrorRetryTimesMap[
+                        id
+                      ] =
+                        0
+
+                      return
+                    }
+
+                    if (
+                      isStopByResolutionChange ||
+                      isStopByStreamEnd
+                    ) {
+                      unknownErrorRetryTimesMap[
+                        id
+                      ] =
+                        0
+                    }
+
+                    emitter.emit(
+                      RECORD_END_NOT_USER_STOP,
+
+                      streamConfig.id
+                    )
+                  }
+                )
+              }
+            )
+
+            return (
+              <main className="show-scrollbar h-full overflow-y-auto px-5 pb-6 pt-4">
+                <div className="mx-auto w-full max-w-[1100px]">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <div className="rounded-full border bg-background px-3 py-1.5">
+                        {t(
+                          'stream_config.all'
+                        )}
+                        {' '}
+                        <strong className="text-foreground">
+                          {
+                            streamConfigList.length
+                          }
+                        </strong>
+                      </div>
+
+                      <div className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
+                        {t(
+                          'stream_config.monitoring'
+                        )}
+                        {' '}
+                        <strong>
+                          {
+                            monitoringCount
+                          }
+                        </strong>
+                      </div>
+
+                      <div className="rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+                        {t(
+                          'stream_config.recording'
+                        )}
+                        {' '}
+                        <strong>
+                          {
+                            recordingCount
+                          }
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {filteredList.length >
+                  0 ? (
+                    <div className="flex flex-col gap-3">
+                      {filteredList.map(
+                        (
+                          streamConfig
+                        ) => (
+                          <StreamConfigCard
+                            key={
+                              streamConfig.id
+                            }
+                            streamConfig={
+                              streamConfig
+                            }
+                          />
+                        )
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex min-h-[280px] flex-col items-center justify-center rounded-xl border border-dashed bg-background/60 px-6 text-center">
+                      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted text-xl">
+                        ●
+                      </div>
+
+                      <div className="font-medium">
+                        {t(
+                          'stream_config.no_tasks'
+                        )}
+                      </div>
+
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        {t(
+                          'nav_bar.create'
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </main>
+            )
+          }
+          TS
+
+      # ============================================================
+      # 顶栏重新整理
+      # ============================================================
+
+      - name: Rewrite navigation bar
+        run: |
+          cat > src/renderer/src/components/NavBar/NavBar.tsx <<'TS'
+          import {
+            useState
+          } from 'react'
+
+          import {
+            useTranslation
+          } from 'react-i18next'
+
+          import Theme from '@/components/NavBar/components/Theme'
+          import UseThemeIcon from '@/components/UseThemeIcon'
+          import StreamConfigSheet from '@/components/StreamConfigSheet'
+
+          import DefaultSettingSheet from './components/DefaultSettingSheet'
+
+          import darkAddIcon from '@/assets/images/dark/add.svg'
+          import lightAddIcon from '@/assets/images/light/add.svg'
+
+          import darkSettingIcon from '@/assets/images/dark/setting.svg'
+          import lightSettingIcon from '@/assets/images/light/setting.svg'
+
+          import darkLogo from '@/assets/images/dark/logo.png'
+          import lightLogo from '@/assets/images/light/logo.png'
+
+          import darkQQIcon from '@/assets/images/dark/qq.svg'
+          import lightQQIcon from '@/assets/images/light/qq.svg'
+
+          import darkDiscordIcon from '@/assets/images/dark/discord.svg'
+          import lightDiscordIcon from '@/assets/images/light/discord.svg'
+
+          import {
+            Select,
+            SelectTrigger,
+            SelectValue,
+            SelectContent,
+            SelectGroup,
+            SelectItem
+          } from '@renderer/shadcn/ui/select'
+
+          import {
+            useNavSelectedStatusStore
+          } from '@renderer/store/useNavSelectedStatusStore'
+
+          export default function NavBar() {
+            const {
+              t
+            } =
+              useTranslation()
+
+            const {
+              navSelectedStatus,
+              setNavSelectedStatus
+            } =
+              useNavSelectedStatusStore(
+                (
+                  state
+                ) => ({
+                  navSelectedStatus:
+                    state.navSelectedStatus,
+
+                  setNavSelectedStatus:
+                    state.setNavSelectedStatus
+                })
+              )
+
+            const [
+              createSheetOpen,
+              setCreateSheetOpen
+            ] =
+              useState(false)
+
+            const [
+              settingSheetOpen,
+              setSettingSheetOpen
+            ] =
+              useState(false)
+
+            const handleLogoClick =
+              () => {
+                window.api
+                  .navByDefaultBrowser(
+                    'https://www.fideo.site'
+                  )
+              }
+
+            const handleQQClick =
+              () => {
+                window.api
+                  .navByDefaultBrowser(
+                    'http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=6J5_9669aU4Dxjb_mWGpAhNvQ7JGrh0h&authKey=HiUtMqFPDEbO9xZFS6V2kNo3rBv3L%2B764z5o9zepXFI%2Bf1h4HkA8%2F2eTZ4F4TdQH&noverify=0&group_code=891116727'
+                  )
+              }
+
+            const handleDiscordClick =
+              () => {
+                window.api
+                  .navByDefaultBrowser(
+                    'https://discord.gg/md5HqyGW'
+                  )
+              }
+
+            return (
+              <div className="flex min-h-[64px] flex-wrap items-center justify-between gap-3 px-5 py-2.5">
+                <div className="flex min-w-0 items-center gap-3">
+                  <UseThemeIcon
+                    dark={
+                      darkLogo
+                    }
+                    light={
+                      lightLogo
+                    }
+                    className="w-[56px] cursor-pointer select-none"
+                    handleClick={
+                      handleLogoClick
+                    }
+                    tooltipContent={
+                      t(
+                        'nav_bar.go_to_website'
+                      )
+                    }
+                  />
+
+                  <div className="h-6 w-px bg-border" />
+
+                  <UseThemeIcon
+                    dark={
+                      darkQQIcon
+                    }
+                    light={
+                      lightQQIcon
+                    }
+                    className="h-[21px] w-[21px] cursor-pointer select-none opacity-80 hover:opacity-100"
+                    handleClick={
+                      handleQQClick
+                    }
+                    tooltipContent={
+                      t(
+                        'nav_bar.qq'
+                      )
+                    }
+                  />
+
+                  <UseThemeIcon
+                    dark={
+                      darkDiscordIcon
+                    }
+                    light={
+                      lightDiscordIcon
+                    }
+                    className="h-[21px] w-[21px] cursor-pointer select-none opacity-80 hover:opacity-100"
+                    handleClick={
+                      handleDiscordClick
+                    }
+                    tooltipContent={
+                      t(
+                        'nav_bar.discord'
+                      )
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={
+                      navSelectedStatus
+                    }
+                    onValueChange={
+                      setNavSelectedStatus
+                    }
+                  >
+                    <SelectTrigger className="h-9 w-[156px]">
+                      <SelectValue />
+                    </SelectTrigger>
+
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="-1">
+                          {t(
+                            'stream_config.all'
+                          )}
+                        </SelectItem>
+
+                        <SelectItem value="0">
+                          {t(
+                            'stream_config.not_started'
+                          )}
+                        </SelectItem>
+
+                        <SelectItem value="1">
+                          {t(
+                            'stream_config.preparing_to_record'
+                          )}
+                        </SelectItem>
+
+                        <SelectItem value="2">
+                          {t(
+                            'stream_config.monitoring'
+                          )}
+                        </SelectItem>
+
+                        <SelectItem value="3">
+                          {t(
+                            'stream_config.recording'
+                          )}
+                        </SelectItem>
+
+                        <SelectItem value="4">
+                          {t(
+                            'stream_config.video_format_conversion'
+                          )}
+                        </SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+
+                  <div className="ml-1 flex h-9 items-center gap-1 rounded-lg border bg-background px-2 shadow-sm">
+                    <UseThemeIcon
+                      dark={
+                        darkAddIcon
+                      }
+                      light={
+                        lightAddIcon
+                      }
+                      className="h-[20px] w-[20px] cursor-pointer select-none"
+                      tooltipContent={
+                        t(
+                          'nav_bar.create'
+                        )
+                      }
+                      handleClick={
+                        () =>
+                          setCreateSheetOpen(
+                            true
+                          )
+                      }
+                    />
+
+                    <UseThemeIcon
+                      dark={
+                        darkSettingIcon
+                      }
+                      light={
+                        lightSettingIcon
+                      }
+                      className="h-[20px] w-[20px] cursor-pointer select-none"
+                      tooltipContent={
+                        t(
+                          'nav_bar.setting'
+                        )
+                      }
+                      handleClick={
+                        () =>
+                          setSettingSheetOpen(
+                            true
+                          )
+                      }
+                    />
+
+                    <Theme />
+                  </div>
+                </div>
+
+                <StreamConfigSheet
+                  sheetOpen={
+                    createSheetOpen
+                  }
+                  setSheetOpen={
+                    setCreateSheetOpen
+                  }
+                  type="create"
+                  streamConfig={
+                    null
+                  }
+                />
+
+                <DefaultSettingSheet
+                  setSheetOpen={
+                    setSettingSheetOpen
+                  }
+                  sheetOpen={
+                    settingSheetOpen
+                  }
+                />
+              </div>
+            )
+          }
+          TS
+
+      # ============================================================
+      # App 主布局 + 设置页间距 + 文案
+      # ============================================================
+
+      - name: Apply global UI cleanup
+        run: |
+          cat > "$RUNNER_TEMP/ui-cleanup.cjs" <<'NODE'
+          const fs = require('fs')
+
+          function read(path) {
+            return fs.readFileSync(
+              path,
+              'utf8'
+            )
+          }
+
+          function write(
+            path,
+            text
+          ) {
+            fs.writeFileSync(
+              path,
+              text,
+              'utf8'
+            )
+          }
+
+          // --------------------------------------------------------
+          // App layout
+          // --------------------------------------------------------
+
+          {
+            const path =
+              'src/renderer/src/App.tsx'
+
+            let text =
+              read(path)
+
+            const oldLayout =
+          `      <TitleBar />
+                <NavBar />
+
+                <StreamConfigList />
+
+                <Toaster />`
+
+            const newLayout =
+          `      <div className="flex h-screen flex-col overflow-hidden bg-muted/20">
+                <div className="shrink-0 bg-background">
+                  <TitleBar />
+                </div>
+
+                <div className="shrink-0 border-b bg-background/95">
+                  <NavBar />
+                </div>
+
+                <div className="min-h-0 flex-1">
+                  <StreamConfigList />
+                </div>
+              </div>
+
+              <Toaster />`
+
+            if (
+              !text.includes(
+                oldLayout
+              )
+            ) {
+              throw new Error(
+                'App layout target not found'
+              )
+            }
+
+            text =
+              text.replace(
+                oldLayout,
+                newLayout
+              )
+
+            write(
+              path,
+              text
+            )
+          }
+
+          // --------------------------------------------------------
+          // Stream config sheet spacing
+          // --------------------------------------------------------
+
+          {
+            const path =
+              'src/renderer/src/components/StreamConfigSheet.tsx'
+
+            let text =
+              read(path)
+
+            text =
+              text.replace(
+                'SheetContent className="flex flex-col"',
+                'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
+              )
+
+            text =
+              text.replace(
+                'form className="space-y-8"',
+                'form className="space-y-5"'
+              )
+
+            text =
+              text.replace(
+                'className="show-scrollbar overflow-y-auto mr-[-14px]"',
+                'className="show-scrollbar min-h-0 flex-1 overflow-y-auto pr-1"'
+              )
+
+            text =
+              text.replace(
+                'className=" pl-1 pr-4 pb-2"',
+                'className="px-1 pb-3 pr-3"'
+              )
+
+            write(
+              path,
+              text
+            )
+          }
+
+          // --------------------------------------------------------
+          // Default settings spacing
+          // --------------------------------------------------------
+
+          {
+            const path =
+              'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx'
+
+            let text =
+              read(path)
+
+            text =
+              text.replace(
+                'SheetContent className="flex flex-col"',
+                'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
+              )
+
+            text =
+              text.replace(
+                'form className="space-y-8"',
+                'form className="space-y-5"'
+              )
+
+            text =
+              text.replace(
+                'className="show-scrollbar overflow-y-auto mr-[-14px]"',
+                'className="show-scrollbar min-h-0 flex-1 overflow-y-auto pr-1"'
+              )
+
+            text =
+              text.replace(
+                'className=" pl-1 pr-4 pb-2"',
+                'className="px-1 pb-3 pr-3"'
+              )
+
+            write(
+              path,
+              text
+            )
+          }
+
+          // --------------------------------------------------------
+          // locales
+          // --------------------------------------------------------
+
+          {
+            const path =
+              'src/renderer/src/locales/locales.js'
+
+            let text =
+              read(path)
+
+            text =
+              text.replace(
+                `all: 'All',`,
+                `all: 'All',
+                    no_tasks: 'No recording or monitoring tasks',
+                    notify_only: 'Notify only',`
+              )
+
+            text =
+              text.replace(
+                `all: '全部',`,
+                `all: '全部',
+                    no_tasks: '当前没有符合条件的监控或录制任务',
+                    notify_only: '仅通知',`
+              )
+
+            text = text
+              .replace(
+                /^\s*preview:\s*'.*?',\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*preview_failed:\s*'.*?',\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*preview_hls_unavailable:\s*'.*?',\s*$/gm,
+                ''
+              )
+              .replace(
+                /^\s*preview_stream_unavailable:\s*'.*?',\s*$/gm,
+                ''
+              )
+
+            write(
+              path,
+              text
+            )
+          }
+
+          // --------------------------------------------------------
+          // Renderer CSP: preview removed, restore tighter policy
+          // --------------------------------------------------------
+
+          {
+            const path =
+              'src/renderer/index.html'
+
+            let text =
+              read(path)
+
+            text =
+              text.replace(
+                /content="default-src[^"]+"/,
+                `content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://api.xunhupay.com; connect-src 'self' https://xizhi.qqoq.net https:;"`
+
+              )
+
+            write(
+              path,
+              text
+            )
+          }
+
+          console.log(
+            'UI cleanup completed.'
+          )
+          NODE
+
+          node "$RUNNER_TEMP/ui-cleanup.cjs"
+
+      - name: Improve global CSS
+        run: |
+          cat >> src/renderer/src/assets/css/globals.css <<'CSS'
+
+          body {
+            overflow: hidden;
+          }
+
+          .stream-card {
+            transition:
+              border-color 160ms ease,
+              box-shadow 160ms ease,
+              transform 160ms ease;
+          }
+
+          .stream-card:hover {
+            box-shadow:
+              0 6px 22px
+              rgba(0, 0, 0, 0.06);
+          }
+
+          .dark .stream-card:hover {
+            box-shadow:
+              0 6px 22px
+              rgba(0, 0, 0, 0.22);
+          }
+
+          button,
+          [role='button'] {
+            -webkit-tap-highlight-color:
+              transparent;
+          }
+          CSS
+
+      # ============================================================
+      # 删除无用预览依赖与文件
+      # ============================================================
+
+      - name: Remove preview dependencies
+        run: |
+          npm uninstall \
+            hls.js \
+            mpegts.js
+
+      - name: Remove preview source files
+        run: |
+          rm -f \
+            src/main/preview-transcoder.ts \
+            src/main/preview-proxy.ts \
+            src/renderer/src/components/StreamPreviewDialog.tsx \
+            src/renderer/src/assets/images/dark/preview.svg \
+            src/renderer/src/assets/images/light/preview.svg
+
+      # ============================================================
+      # 版本
+      # ============================================================
+
+      - name: Update version
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          npm version \
+            "$APP_VERSION" \
+            --no-git-tag-version
+
+      # ============================================================
+      # 全面检查
+      # ============================================================
+
+      - name: Verify preview removed
+        run: |
+          echo "Checking preview feature removal..."
+
+          if grep -R \
+            -E \
+            "START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|stopStreamPreview|StreamPreviewDialog|preview-transcoder|preview-proxy" \
+            src
+          then
+            echo "ERROR: Preview code still exists."
+            exit 1
+          fi
+
+          node - <<'NODE'
+          const pkg =
+            require('./package.json')
+
+          if (
+            pkg.dependencies?.['hls.js']
+          ) {
+            throw new Error(
+              'hls.js still exists'
+            )
+          }
+
+          if (
+            pkg.dependencies?.['mpegts.js']
+          ) {
+            throw new Error(
+              'mpegts.js still exists'
+            )
+          }
+
+          console.log(
+            'Preview dependencies removed.'
+          )
+          NODE
+
+      - name: Verify UI and core functions
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          echo "Checking UI..."
+
+          grep -q \
+            "notify_only" \
+            src/renderer/src/locales/locales.js
+
+          grep -q \
+            "no_tasks" \
+            src/renderer/src/locales/locales.js
+
+          grep -q \
+            "stream-card" \
+            src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx
+
+          grep -q \
+            "monitoringCount" \
+            src/renderer/src/components/StreamConfigList/StreamConfigList.tsx
+
+          grep -q \
+            'SelectItem value="0"' \
+            src/renderer/src/components/NavBar/NavBar.tsx
+
+          grep -q \
+            'SelectItem value="4"' \
+            src/renderer/src/components/NavBar/NavBar.tsx
+
+          echo "Checking monitor-only mode..."
+
+          grep -q \
+            "autoRecord: boolean" \
+            type.d.ts
+
+          grep -q \
+            "handleMonitorOnly" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          echo "Checking Douyin quality selection..."
+
+          grep -q \
+            "getQualityRank" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "candidate_resolution" \
+            src/main/crawler/plugins/douyin.js
+
+          echo "Checking original recording stream-copy..."
+
+          grep -q \
+            "videoCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "audioCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          echo "Checking version..."
+
+          node -e "
+          const p =
+            require('./package.json');
+
+          if (
+            p.version !==
+            process.env.APP_VERSION
+          ) {
+            console.error(
+              'Version mismatch:',
+              p.version
+            );
+
+            process.exit(1);
+          }
+
+          console.log(
+            'Version:',
+            p.version
+          );
+          "
+
+      - name: TypeScript check
+        run: |
+          npm run typecheck
+
+      - name: Build Electron app
+        run: |
+          npm run build
+
+      # ============================================================
+      # Windows x64
+      # ============================================================
+
+      - name: Package Windows x64
+        run: |
+          npx electron-builder \
+            --win \
+            nsis \
+            --x64 \
+            --publish never
+
+      - name: Verify Windows installer
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $package =
+            Get-Content package.json |
+            ConvertFrom-Json
+
+          if (
+            $package.version -ne
+            $env:EXPECTED_VERSION
+          ) {
+            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+          }
+
+          $installers =
+            Get-ChildItem `
+              -Path dist `
+              -Filter "*-x64.exe"
+
+          if (
+            -not $installers -or
+            $installers.Count -eq 0
+          ) {
+            throw "Windows x64 installer not generated."
+          }
+
+          Write-Host "Generated installer:"
+
+          $installers |
+            Select-Object Name, Length, FullName |
+            Format-Table -AutoSize
+
+      # ============================================================
+      # 提交测试分支
+      # ============================================================
+
+      - name: Commit V2.7 source
+        run: |
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet
+          then
+            echo \
+              "No source changes to commit."
+          else
+            git commit \
+              -m "Remove preview and redesign status UI"
+          fi
+
+          git push \
+            --force \
+            origin \
+            douyin-v2.7-ui-test
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-${{ inputs.version }}-douyin-v2.7-ui-windows-x64
+          path: dist/*-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        if: always()
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "# Fideo Douyin V2.7 UI Cleanup"
+            echo
+            echo "Version: \`$APP_VERSION\`"
+            echo
+            echo "Branch: \`douyin-v2.7-ui-test\`"
+            echo
+            echo "Changes:"
+            echo
+            echo "- Removed broken live preview feature"
+            echo "- Removed HLS and MPEG-TS preview dependencies"
+            echo "- Removed preview IPC and local preview server"
+            echo "- Redesigned stream cards"
+            echo "- Improved status badges"
+            echo "- Added Auto Record / Notify Only badges"
+            echo "- Added all status filters"
+            echo "- Added task count summary"
+            echo "- Added empty-state layout"
+            echo "- Improved monitoring and recording progress"
+            echo "- Improved toolbar spacing"
+            echo "- Improved settings sheet spacing"
+            echo "- Fixed duplicate notify latch on temporary UNKNOWN_CODE"
+            echo "- Highest-quality Douyin recording retained"
+            echo "- Monitor-only mode retained"
+            echo "- Xizhi/Windows notifications retained"
+          } >> "$GITHUB_STEP_SUMMARY"
