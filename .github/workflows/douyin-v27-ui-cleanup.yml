@@ -44,33 +44,117 @@ jobs:
           npm ci
 
       # ============================================================
-      # 彻底删除预览功能
+      # 彻底删除主进程预览代码
       # ============================================================
 
-      - name: Remove preview backend and IPC
+      - name: Remove preview backend and IPC completely
         run: |
           cat > "$RUNNER_TEMP/remove-preview.cjs" <<'NODE'
           const fs = require('fs')
 
           const read = (path) =>
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
+            fs.readFileSync(path, 'utf8')
 
-          const write = (
-            path,
-            content
-          ) =>
-            fs.writeFileSync(
-              path,
-              content,
-              'utf8'
-            )
+          const write = (path, content) =>
+            fs.writeFileSync(path, content, 'utf8')
 
-          // ============================
-          // const.ts
-          // ============================
+          // --------------------------------------------------
+          // src/main/index.ts
+          // --------------------------------------------------
+
+          {
+            const path =
+              'src/main/index.ts'
+
+            let text =
+              read(path)
+
+            const previewNameIndex =
+              text.indexOf(
+                'START_STREAM_PREVIEW'
+              )
+
+            if (
+              previewNameIndex >= 0
+            ) {
+              const blockStart =
+                text.lastIndexOf(
+                  'ipcMain.handle',
+                  previewNameIndex
+                )
+
+              const recordStart =
+                text.indexOf(
+                  'ipcMain.handle(START_STREAM_RECORD',
+                  previewNameIndex
+                )
+
+              if (
+                blockStart < 0 ||
+                recordStart < 0 ||
+                recordStart <= blockStart
+              ) {
+                throw new Error(
+                  'Unable to locate complete preview IPC block in main/index.ts'
+                )
+              }
+
+              console.log(
+                'Removing preview IPC block:',
+                blockStart,
+                '->',
+                recordStart
+              )
+
+              text =
+                text.slice(
+                  0,
+                  blockStart
+                ) +
+                text.slice(
+                  recordStart
+                )
+            }
+
+            text =
+              text.replace(
+                /import\s*\{\s*startPreviewTranscoder\s*,\s*stopPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
+                ''
+              )
+
+            text =
+              text.replace(
+                /import\s*\{\s*stopPreviewTranscoder\s*,\s*startPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
+                ''
+              )
+
+            text =
+              text.replace(
+                /[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/g,
+                ''
+              )
+
+            text =
+              text.replace(
+                /[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/g,
+                ''
+              )
+
+            text =
+              text.replace(
+                /[ \t]*(?:void\s+|await\s+)?stopPreviewTranscoder\(\)[ \t]*;?[ \t]*\r?\n/g,
+                ''
+              )
+
+            write(
+              path,
+              text
+            )
+          }
+
+          // --------------------------------------------------
+          // src/const.ts
+          // --------------------------------------------------
 
           {
             const path =
@@ -80,98 +164,16 @@ jobs:
               read(path)
 
             text =
-              text
-                .replace(
-                  /[ \t]*export const START_STREAM_PREVIEW = 'START_STREAM_PREVIEW'[ \t]*\r?\n/g,
-                  ''
-                )
-                .replace(
-                  /[ \t]*export const STOP_STREAM_PREVIEW = 'STOP_STREAM_PREVIEW'[ \t]*\r?\n/g,
-                  ''
-                )
-
-            write(
-              path,
-              text
-            )
-          }
-
-          // ============================
-          // main/index.ts
-          // ============================
-
-          {
-            const path =
-              'src/main/index.ts'
-
-            let text =
-              read(path)
-
-            text =
-              text
-                .replace(
-                  /[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/g,
-                  ''
-                )
-                .replace(
-                  /[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/g,
-                  ''
-                )
-
-            text =
               text.replace(
-                /[ \t]*import\s*\{\s*startPreviewTranscoder,\s*stopPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"][ \t]*\r?\n/g,
+                /^[ \t]*export const START_STREAM_PREVIEW = 'START_STREAM_PREVIEW'[ \t]*\r?\n/gm,
                 ''
               )
 
-            const start =
-              text.indexOf(
-                'ipcMain.handle(\n    START_STREAM_PREVIEW'
-              )
-
-            const altStart =
-              text.indexOf(
-                'ipcMain.handle(\r\n    START_STREAM_PREVIEW'
-              )
-
-            const realStart =
-              start >= 0
-                ? start
-                : altStart
-
-            if (
-              realStart >= 0
-            ) {
-              const end =
-                text.indexOf(
-                  'ipcMain.handle(START_STREAM_RECORD',
-                  realStart
-                )
-
-              if (
-                end > realStart
-              ) {
-                text =
-                  text.slice(
-                    0,
-                    realStart
-                  ) +
-                  text.slice(
-                    end
-                  )
-              }
-            }
-
             text =
-              text
-                .replace(
-                  /[ \t]*void stopPreviewTranscoder\(\)[ \t]*\r?\n/g,
-                  ''
-                )
-                .replace(
-                  /[ \t]*await stopPreviewTranscoder\(\)[ \t]*\r?\n/g,
-                  ''
-                )
+              text.replace(
+                /^[ \t]*export const STOP_STREAM_PREVIEW = 'STOP_STREAM_PREVIEW'[ \t]*\r?\n/gm,
+                ''
+              )
 
             write(
               path,
@@ -179,9 +181,9 @@ jobs:
             )
           }
 
-          // ============================
+          // --------------------------------------------------
           // preload/index.ts
-          // ============================
+          // --------------------------------------------------
 
           {
             const path =
@@ -191,15 +193,16 @@ jobs:
               read(path)
 
             text =
-              text
-                .replace(
-                  /[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/g,
-                  ''
-                )
-                .replace(
-                  /[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/g,
-                  ''
-                )
+              text.replace(
+                /^[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/gm,
+                ''
+              )
+
+            text =
+              text.replace(
+                /^[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/gm,
+                ''
+              )
 
             const start =
               text.indexOf(
@@ -238,9 +241,9 @@ jobs:
             )
           }
 
-          // ============================
+          // --------------------------------------------------
           // preload/index.d.ts
-          // ============================
+          // --------------------------------------------------
 
           {
             const path =
@@ -287,14 +290,14 @@ jobs:
           }
 
           console.log(
-            'Preview backend and IPC removed.'
+            'Preview backend fully removed.'
           )
           NODE
 
           node "$RUNNER_TEMP/remove-preview.cjs"
 
       # ============================================================
-      # 操作栏：直接完整重写，彻底不包含预览
+      # 操作栏
       # ============================================================
 
       - name: Rewrite operation bar without preview
@@ -312,67 +315,57 @@ jobs:
 
           import UseThemeIcon from '@/components/UseThemeIcon'
           import Dialog from '@/components/Dialog'
+          import StreamConfigSheet from '@renderer/components/StreamConfigSheet'
 
           import {
             useStreamConfigStore
           } from '@/store/useStreamConfigStore'
 
-          import darkPlayIcon from '@/assets/images/dark/play.svg'
-          import lightPlayIcon from '@/assets/images/light/play.svg'
+          import {
+            useDefaultSettingsStore
+          } from '@/store/useDefaultSettingsStore'
 
-          import darkPauseIcon from '@/assets/images/dark/pause.svg'
-          import lightPauseIcon from '@/assets/images/light/pause.svg'
-
-          import darkSettingIcon from '@/assets/images/dark/setting.svg'
-          import lightSettingIcon from '@/assets/images/light/setting.svg'
-
-          import darkDeleteIcon from '@/assets/images/dark/close.svg'
-          import lightDeleteIcon from '@/assets/images/light/close.svg'
+          import {
+            useToast
+          } from '@/hooks/useToast'
 
           import {
             StreamStatus,
             useXizhiToPushNotification
-          } from '@renderer/lib/utils'
+          } from '@/lib/utils'
 
-          import StreamConfigSheet from '@renderer/components/StreamConfigSheet'
+          import emitter from '@/lib/bus'
 
-          import {
-            useToast
-          } from '@renderer/hooks/useToast'
+          import darkPlayIcon from '@/assets/images/dark/play.svg'
+          import lightPlayIcon from '@/assets/images/light/play.svg'
+          import darkPauseIcon from '@/assets/images/dark/pause.svg'
+          import lightPauseIcon from '@/assets/images/light/pause.svg'
+          import darkSettingIcon from '@/assets/images/dark/setting.svg'
+          import lightSettingIcon from '@/assets/images/light/setting.svg'
+          import darkDeleteIcon from '@/assets/images/dark/close.svg'
+          import lightDeleteIcon from '@/assets/images/light/close.svg'
 
           import {
             CRAWLER_ERROR_CODE,
             SUCCESS_CODE,
             UNKNOWN_CODE,
-            crawlerErrorCodeToI18nMessage,
-            FFMPEG_ERROR_CODE
+            FFMPEG_ERROR_CODE,
+            crawlerErrorCodeToI18nMessage
           } from '../../../../../code'
 
           import {
             RECORD_END_NOT_USER_STOP
           } from '../../../../../const'
 
-          import emitter from '@/lib/bus'
-
-          import {
-            useDefaultSettingsStore
-          } from '../../../store/useDefaultSettingsStore'
-
-          interface OperationBarProps {
+          interface Props {
             streamConfig: IStreamConfig
           }
 
           export default function OperationBar(
             {
               streamConfig
-            }: OperationBarProps
+            }: Props
           ) {
-            const timer =
-              useRef<NodeJS.Timeout>()
-
-            const liveNotifiedRef =
-              useRef(false)
-
             const {
               t
             } =
@@ -382,6 +375,12 @@ jobs:
               toast
             } =
               useToast()
+
+            const timer =
+              useRef<NodeJS.Timeout>()
+
+            const liveNotifiedRef =
+              useRef(false)
 
             const [
               sheetOpen,
@@ -395,7 +394,7 @@ jobs:
             ] =
               useState(false)
 
-            const defaultSettingsConfig =
+            const defaultSettings =
               useDefaultSettingsStore(
                 (
                   state
@@ -419,7 +418,7 @@ jobs:
                 })
               )
 
-            const scheduleMonitorOnly =
+            const scheduleMonitor =
               () => {
                 if (
                   timer.current
@@ -432,7 +431,7 @@ jobs:
                 timer.current =
                   setTimeout(
                     () => {
-                      void handleMonitorOnly(
+                      void monitorOnly(
                         false
                       )
                     },
@@ -442,12 +441,12 @@ jobs:
                   )
               }
 
-            const handleMonitorOnly =
+            const monitorOnly =
               async (
-                isFirst =
+                first =
                   true
               ) => {
-                if (isFirst) {
+                if (first) {
                   liveNotifiedRef.current =
                     false
 
@@ -488,7 +487,7 @@ jobs:
                       })
                     )
 
-                const latest =
+                const current =
                   useStreamConfigStore
                     .getState()
                     .streamConfigList
@@ -501,8 +500,8 @@ jobs:
                     )
 
                 if (
-                  !latest ||
-                  latest.status ===
+                  !current ||
+                  current.status ===
                     StreamStatus.NOT_STARTED
                 ) {
                   return
@@ -511,10 +510,8 @@ jobs:
                 if (
                   result.code ===
                     SUCCESS_CODE &&
-                  Array.isArray(
-                    result.liveUrls
-                  ) &&
-                  result.liveUrls.length >
+                  result.liveUrls
+                    .length >
                     0
                 ) {
                   if (
@@ -552,12 +549,12 @@ jobs:
                     })
 
                     if (
-                      defaultSettingsConfig
+                      defaultSettings
                         .xizhiKey
                     ) {
                       useXizhiToPushNotification({
                         key:
-                          defaultSettingsConfig
+                          defaultSettings
                             .xizhiKey,
 
                         title:
@@ -571,7 +568,7 @@ jobs:
                     }
                   }
 
-                  scheduleMonitorOnly()
+                  scheduleMonitor()
 
                   return
                 }
@@ -583,23 +580,22 @@ jobs:
                   liveNotifiedRef.current =
                     false
 
-                  scheduleMonitorOnly()
+                  scheduleMonitor()
 
                   return
                 }
 
-                // 临时错误不重置通知状态
                 if (
                   result.code ===
                   UNKNOWN_CODE
                 ) {
-                  scheduleMonitorOnly()
+                  scheduleMonitor()
 
                   return
                 }
 
-                if (isFirst) {
-                  const message =
+                if (first) {
+                  const msg =
                     crawlerErrorCodeToI18nMessage(
                       result.code,
                       'error.get_line.'
@@ -611,7 +607,7 @@ jobs:
 
                     description:
                       t(
-                        message
+                        msg
                       ),
 
                     variant:
@@ -619,15 +615,15 @@ jobs:
                   })
                 }
 
-                scheduleMonitorOnly()
+                scheduleMonitor()
               }
 
-            const handleStartRecord =
+            const startRecord =
               async (
-                isFirst =
+                first =
                   true
               ) => {
-                if (isFirst) {
+                if (first) {
                   await updateStreamConfig(
                     {
                       ...streamConfig,
@@ -656,7 +652,7 @@ jobs:
                       })
                     )
 
-                const current =
+                const latest =
                   useStreamConfigStore
                     .getState()
                     .streamConfigList
@@ -669,8 +665,8 @@ jobs:
                     )
 
                 if (
-                  !current ||
-                  current.status ===
+                  !latest ||
+                  latest.status ===
                     StreamStatus.NOT_STARTED
                 ) {
                   return
@@ -701,25 +697,6 @@ jobs:
                       )
                   })
 
-                  if (
-                    defaultSettingsConfig
-                      .xizhiKey
-                  ) {
-                    useXizhiToPushNotification({
-                      key:
-                        defaultSettingsConfig
-                          .xizhiKey,
-
-                      title:
-                        streamConfig.title,
-
-                      content:
-                        t(
-                          'start_record'
-                        )
-                    })
-                  }
-
                   return
                 }
 
@@ -740,7 +717,7 @@ jobs:
                   timer.current =
                     setTimeout(
                       () => {
-                        void handleStartRecord(
+                        void startRecord(
                           false
                         )
                       },
@@ -748,18 +725,6 @@ jobs:
                       streamConfig.interval *
                         1000
                     )
-
-                  if (isFirst) {
-                    toast({
-                      title:
-                        streamConfig.title,
-
-                      description:
-                        t(
-                          'error.start_record.not_urls'
-                        )
-                    })
-                  }
 
                   await updateStreamConfig(
                     {
@@ -771,6 +736,18 @@ jobs:
 
                     streamConfig.id
                   )
+
+                  if (first) {
+                    toast({
+                      title:
+                        streamConfig.title,
+
+                      description:
+                        t(
+                          'error.start_record.not_urls'
+                        )
+                    })
+                  }
 
                   return
                 }
@@ -822,14 +799,14 @@ jobs:
                   streamConfig.autoRecord ===
                   false
                 ) {
-                  void handleMonitorOnly(
+                  void monitorOnly(
                     true
                   )
 
                   return
                 }
 
-                void handleStartRecord(
+                void startRecord(
                   true
                 )
               }
@@ -873,7 +850,7 @@ jobs:
 
             useEffect(
               () => {
-                const handler =
+                const onEnd =
                   (
                     id: string
                   ) => {
@@ -903,14 +880,14 @@ jobs:
                 emitter.on(
                   RECORD_END_NOT_USER_STOP,
 
-                  handler as any
+                  onEnd as any
                 )
 
                 return () => {
                   emitter.off(
                     RECORD_END_NOT_USER_STOP,
 
-                    handler as any
+                    onEnd as any
                   )
                 }
               },
@@ -938,11 +915,11 @@ jobs:
 
             return (
               <>
-                <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-background/80 p-1 shadow-sm">
+                <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-background/80 p-1.5 shadow-sm">
                   {streamConfig.status ===
                   StreamStatus.NOT_STARTED ? (
                     <UseThemeIcon
-                      className="h-[19px] w-[19px] cursor-pointer select-none"
+                      className="h-5 w-5 cursor-pointer"
                       dark={
                         darkPlayIcon
                       }
@@ -952,14 +929,10 @@ jobs:
                       handleClick={
                         handleStart
                       }
-                      id={
-                        streamConfig.id +
-                        '_play'
-                      }
                     />
                   ) : (
                     <UseThemeIcon
-                      className="h-[19px] w-[19px] cursor-pointer select-none"
+                      className="h-5 w-5 cursor-pointer"
                       dark={
                         darkPauseIcon
                       }
@@ -969,15 +942,11 @@ jobs:
                       handleClick={
                         handleStop
                       }
-                      id={
-                        streamConfig.id +
-                        '_pause'
-                      }
                     />
                   )}
 
                   <UseThemeIcon
-                    className="h-[19px] w-[19px] cursor-pointer select-none"
+                    className="h-5 w-5 cursor-pointer"
                     dark={
                       darkSettingIcon
                     }
@@ -998,7 +967,7 @@ jobs:
                   />
 
                   <UseThemeIcon
-                    className="h-[19px] w-[19px] cursor-pointer select-none"
+                    className="h-5 w-5 cursor-pointer"
                     dark={
                       darkDeleteIcon
                     }
@@ -1067,10 +1036,10 @@ jobs:
           TS
 
       # ============================================================
-      # 状态条
+      # 状态进度
       # ============================================================
 
-      - name: Rewrite status progress
+      - name: Rewrite task progress UI
         run: |
           cat > src/renderer/src/components/StreamConfigList/components/Progress.tsx <<'TS'
           import {
@@ -1099,7 +1068,7 @@ jobs:
             ) {
               return (
                 <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-blue-500/15">
-                  <div className="absolute left-[2px] top-0 h-full w-[48px] rounded-full bg-blue-500 animate-progress" />
+                  <div className="absolute top-0 h-full w-12 rounded-full bg-blue-500 animate-progress" />
                 </div>
               )
             }
@@ -1109,14 +1078,14 @@ jobs:
               StreamStatus.RECORDING
             ) {
               return (
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-red-500/15">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-red-500/20">
                   <div className="h-full w-full animate-pulse rounded-full bg-red-500" />
                 </div>
               )
             }
 
             return (
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-amber-500/15">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-amber-500/20">
                 <div className="h-full w-2/3 animate-pulse rounded-full bg-amber-500" />
               </div>
             )
@@ -1124,10 +1093,10 @@ jobs:
           TS
 
       # ============================================================
-      # 卡片布局
+      # 卡片
       # ============================================================
 
-      - name: Rewrite stream card
+      - name: Rewrite task card UI
         run: |
           cat > src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx <<'TS'
           import {
@@ -1148,23 +1117,24 @@ jobs:
 
           import Progress from './Progress'
           import OperationBar from './OperationBar'
+
           import {
             MoveCardDropdownMenu
           } from './MoveCardDropDownMenu'
 
           import {
             useFfmpegProgressInfoStore
-          } from '@renderer/store/useFfmpegProgressInfoStore'
+          } from '@/store/useFfmpegProgressInfoStore'
 
           import {
             useNavSelectedStatusStore
-          } from '@renderer/store/useNavSelectedStatusStore'
+          } from '@/store/useNavSelectedStatusStore'
 
           interface Props {
             streamConfig: IStreamConfig
           }
 
-          const localeMap:
+          const statusMap:
             Record<number, string> = {
               0:
                 'stream_config.not_started',
@@ -1192,7 +1162,7 @@ jobs:
             } =
               useTranslation()
 
-            const info =
+            const progress =
               useFfmpegProgressInfoStore(
                 (
                   state
@@ -1202,7 +1172,7 @@ jobs:
                   ]
               )
 
-            const navSelectedStatus =
+            const filter =
               useNavSelectedStatusStore(
                 (
                   state
@@ -1211,22 +1181,23 @@ jobs:
               )
 
             const size =
-              info?.targetSize
+              progress?.targetSize
                 ? (
-                    info.targetSize /
+                    progress.targetSize /
                     1024
                   ).toFixed(
                     1
-                  ) + ' MB'
+                  ) +
+                  ' MB'
                 : '--'
 
             return (
-              <Card className="stream-card overflow-hidden shadow-sm">
+              <Card className="stream-card overflow-hidden">
                 <CardHeader className="pb-4">
                   <div className="flex min-w-0 items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <CardTitle className="max-w-[420px] truncate text-base">
+                        <CardTitle className="max-w-[480px] truncate text-base">
                           {
                             streamConfig.title
                           }
@@ -1234,10 +1205,10 @@ jobs:
 
                         <Badge variant="outline">
                           {t(
-                            localeMap[
+                            statusMap[
                               streamConfig.status
                             ] ||
-                              localeMap[
+                              statusMap[
                                 0
                               ]
                           )}
@@ -1247,8 +1218,8 @@ jobs:
                           variant="outline"
                           className={
                             streamConfig.autoRecord
-                              ? 'border-emerald-300 text-emerald-600'
-                              : 'border-blue-300 text-blue-600'
+                              ? 'border-emerald-400 text-emerald-600'
+                              : 'border-blue-400 text-blue-600'
                           }
                         >
                           {streamConfig.autoRecord
@@ -1261,10 +1232,10 @@ jobs:
                         </Badge>
                       </div>
 
-                      <CardDescription className="mt-2 flex min-w-0">
+                      <CardDescription className="mt-2">
                         <button
                           type="button"
-                          className="truncate text-left underline underline-offset-2"
+                          className="block max-w-full truncate text-left underline underline-offset-2"
                           onClick={
                             () =>
                               window.api.navByDefaultBrowser(
@@ -1299,7 +1270,7 @@ jobs:
                       <span>
                         ⏱{' '}
                         {
-                          info?.timemark ||
+                          progress?.timemark ||
                           '--:--:--'
                         }
                       </span>
@@ -1325,7 +1296,7 @@ jobs:
                       </span>
                     </div>
 
-                    {navSelectedStatus ===
+                    {filter ===
                       '-1' && (
                       <MoveCardDropdownMenu
                         streamConfig={
@@ -1341,10 +1312,69 @@ jobs:
           TS
 
       # ============================================================
-      # UI 全局优化
+      # 顶部筛选全部状态
       # ============================================================
 
-      - name: Apply UI layout cleanup
+      - name: Add complete status filters
+        run: |
+          cat > "$RUNNER_TEMP/nav.cjs" <<'NODE'
+          const fs =
+            require('fs')
+
+          const path =
+            'src/renderer/src/components/NavBar/NavBar.tsx'
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
+          const old =
+          `<SelectItem value="-1">{t('stream_config.all')}</SelectItem>
+              <SelectItem value="2">{t('stream_config.monitoring')}</SelectItem>
+              <SelectItem value="3">{t('stream_config.recording')}</SelectItem>`
+
+          const next =
+          `<SelectItem value="-1">{t('stream_config.all')}</SelectItem>
+              <SelectItem value="0">{t('stream_config.not_started')}</SelectItem>
+              <SelectItem value="1">{t('stream_config.preparing_to_record')}</SelectItem>
+              <SelectItem value="2">{t('stream_config.monitoring')}</SelectItem>
+              <SelectItem value="3">{t('stream_config.recording')}</SelectItem>
+              <SelectItem value="4">{t('stream_config.video_format_conversion')}</SelectItem>`
+
+          if (
+            text.includes(
+              old
+            )
+          ) {
+            text =
+              text.replace(
+                old,
+                next
+              )
+          }
+
+          text =
+            text.replace(
+              'className="w-[180px]"',
+              'className="w-[170px]"'
+            )
+
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
+          )
+          NODE
+
+          node "$RUNNER_TEMP/nav.cjs"
+
+      # ============================================================
+      # 主布局、设置布局、文案
+      # ============================================================
+
+      - name: Optimize global layouts
         run: |
           cat > "$RUNNER_TEMP/ui.cjs" <<'NODE'
           const fs =
@@ -1360,11 +1390,11 @@ jobs:
           const write =
             (
               path,
-              content
+              text
             ) =>
               fs.writeFileSync(
                 path,
-                content,
+                text,
                 'utf8'
               )
 
@@ -1376,9 +1406,22 @@ jobs:
             let text =
               read(path)
 
+            const pattern =
+              /<TitleBar\s*\/>\s*<NavBar\s*\/>\s*<StreamConfigList\s*\/>\s*<Toaster\s*\/>/m
+
+            if (
+              !pattern.test(
+                text
+              )
+            ) {
+              throw new Error(
+                'App root layout not found'
+              )
+            }
+
             text =
               text.replace(
-                /<TitleBar\s*\/>\s*<NavBar\s*\/>\s*<StreamConfigList\s*\/>\s*<Toaster\s*\/>/m,
+                pattern,
 
                 `<div className="flex h-screen flex-col overflow-hidden bg-muted/20">
                   <div className="shrink-0 bg-background">
@@ -1403,7 +1446,7 @@ jobs:
             )
           }
 
-          // Stream list
+          // List
           {
             const path =
               'src/renderer/src/components/StreamConfigList/StreamConfigList.tsx'
@@ -1424,7 +1467,7 @@ jobs:
             )
           }
 
-          // Sheet layouts
+          // Side sheets
           for (
             const path of [
               'src/renderer/src/components/StreamConfigSheet.tsx',
@@ -1436,17 +1479,18 @@ jobs:
               read(path)
 
             text =
-              text
-                .replace(
-                  'SheetContent className="flex flex-col"',
+              text.replace(
+                'SheetContent className="flex flex-col"',
 
-                  'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
-                )
-                .replace(
-                  'form className="space-y-8"',
+                'SheetContent className="flex w-[440px] flex-col sm:max-w-[440px]"'
+              )
 
-                  'form className="space-y-5"'
-                )
+            text =
+              text.replace(
+                'form className="space-y-8"',
+
+                'form className="space-y-5"'
+              )
 
             write(
               path,
@@ -1454,7 +1498,7 @@ jobs:
             )
           }
 
-          // Locales
+          // Locale
           {
             const path =
               'src/renderer/src/locales/locales.js'
@@ -1513,7 +1557,7 @@ jobs:
             )
           }
 
-          // CSP
+          // CSP restore
           {
             const path =
               'src/renderer/index.html'
@@ -1535,13 +1579,13 @@ jobs:
           }
 
           console.log(
-            'UI cleanup completed.'
+            'Global UI layouts optimized.'
           )
           NODE
 
           node "$RUNNER_TEMP/ui.cjs"
 
-      - name: Improve global CSS
+      - name: Improve UI CSS
         run: |
           cat >> src/renderer/src/assets/css/globals.css <<'CSS'
 
@@ -1557,19 +1601,19 @@ jobs:
 
           .stream-card:hover {
             box-shadow:
-              0 6px 20px
+              0 6px 22px
               rgba(0, 0, 0, 0.07);
           }
 
           .dark .stream-card:hover {
             box-shadow:
-              0 6px 20px
+              0 6px 22px
               rgba(0, 0, 0, 0.25);
           }
           CSS
 
       # ============================================================
-      # 删除依赖、文件
+      # 删除预览依赖及文件
       # ============================================================
 
       - name: Remove preview dependencies
@@ -1596,26 +1640,26 @@ jobs:
             --no-git-tag-version
 
       # ============================================================
-      # 验证删除完整性
+      # 严格检查
       # ============================================================
 
       - name: Verify preview completely removed
         run: |
-          echo "Checking preview code..."
+          echo "Searching for preview leftovers..."
 
-          matches="$(
+          result="$(
             grep -R \
               -n \
               -E \
-              "START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|stopStreamPreview|StreamPreviewDialog|preview-transcoder|preview-proxy" \
+              "START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|stopStreamPreview|startPreviewTranscoder|stopPreviewTranscoder|StreamPreviewDialog|preview-transcoder|preview-proxy" \
               src \
               || true
           )"
 
-          if [ -n "$matches" ]
+          if [ -n "$result" ]
           then
-            echo "$matches"
-            echo "ERROR: Preview code still exists."
+            echo "$result"
+            echo "Preview leftovers detected."
             exit 1
           fi
 
@@ -1627,7 +1671,7 @@ jobs:
             pkg.dependencies?.['hls.js']
           ) {
             throw new Error(
-              'hls.js still exists'
+              'hls.js not removed'
             )
           }
 
@@ -1635,21 +1679,61 @@ jobs:
             pkg.dependencies?.['mpegts.js']
           ) {
             throw new Error(
-              'mpegts.js still exists'
+              'mpegts.js not removed'
             )
           }
 
           console.log(
-            'Preview feature fully removed.'
+            'Preview fully removed.'
           )
           NODE
 
-      - name: Verify core features retained
+      - name: Verify main IPC structure
+        run: |
+          node - <<'NODE'
+          const fs =
+            require('fs')
+
+          const text =
+            fs.readFileSync(
+              'src/main/index.ts',
+              'utf8'
+            )
+
+          if (
+            !text.includes(
+              'ipcMain.handle(START_STREAM_RECORD'
+            )
+          ) {
+            throw new Error(
+              'START_STREAM_RECORD handler missing'
+            )
+          }
+
+          if (
+            text.includes(
+              'START_STREAM_PREVIEW'
+            ) ||
+            text.includes(
+              'startPreviewTranscoder'
+            )
+          ) {
+            throw new Error(
+              'Preview main-process code still remains'
+            )
+          }
+
+          console.log(
+            'Main IPC structure valid.'
+          )
+          NODE
+
+      - name: Verify retained features
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           grep -q \
-            "handleMonitorOnly" \
+            "monitorOnly" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
           grep -q \
@@ -1693,7 +1777,7 @@ jobs:
           "
 
       # ============================================================
-      # 编译
+      # TypeScript + 构建
       # ============================================================
 
       - name: TypeScript check
@@ -1736,7 +1820,7 @@ jobs:
             Format-Table -AutoSize
 
       # ============================================================
-      # 保存到测试分支
+      # 保存 V2.7
       # ============================================================
 
       - name: Commit V2.7 source
@@ -1754,10 +1838,10 @@ jobs:
           if git diff --cached --quiet
           then
             echo \
-              "No source changes to commit."
+              "No source changes."
           else
             git commit \
-              -m "Remove preview and optimize application UI"
+              -m "Remove preview and optimize monitoring UI"
           fi
 
           git push \
@@ -1765,7 +1849,7 @@ jobs:
             origin \
             douyin-v2.7-ui-test
 
-      - name: Upload Windows x64 installer
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: fideo-${{ inputs.version }}-douyin-v2.7-ui-windows-x64
@@ -1779,19 +1863,21 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
         run: |
           {
-            echo "# Fideo Douyin V2.7"
+            echo "# Fideo V2.7"
             echo
             echo "Version: \`$APP_VERSION\`"
             echo
             echo "Branch: \`douyin-v2.7-ui-test\`"
             echo
-            echo "- Live preview completely removed"
-            echo "- HLS/MPEGTS preview dependencies removed"
-            echo "- Task card UI redesigned"
-            echo "- Monitoring/recording states improved"
-            echo "- Auto record / notify-only state retained"
-            echo "- Douyin monitoring retained"
+            echo "- Preview feature completely removed"
+            echo "- Preview IPC removed"
+            echo "- HLS / MPEGTS dependencies removed"
+            echo "- Task card layout improved"
+            echo "- Monitoring and recording state UI improved"
+            echo "- Complete status filters"
+            echo "- Settings spacing improved"
+            echo "- Notify-only mode retained"
             echo "- Windows notification retained"
             echo "- Xizhi WeChat notification retained"
-            echo "- Highest-quality recording logic retained"
+            echo "- Douyin quality selection retained"
           } >> "$GITHUB_STEP_SUMMARY"
