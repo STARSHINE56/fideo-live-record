@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Douyin Anchor Monitor
+    name: Build Douyin V2.8 Anchor Monitor
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -48,7 +48,8 @@ jobs:
           npm ci
 
       # ============================================================
-      # 1. 允许 crawler 接受抖音主播主页
+      # 1. 让 crawler 接受抖音主播主页
+      # 不再使用整段字符串匹配
       # ============================================================
 
       - name: Add Douyin profile hosts
@@ -66,46 +67,82 @@ jobs:
             )
 
           if (
-            !text.includes(
+            text.includes(
               "'www.douyin.com':"
             )
           ) {
-            const marker =
-          `  'v.douyin.com': {
-            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
-            getRoomInfoFn: getDouYinRoomInfoPlugin
-          },`
+            console.log(
+              'Douyin profile hosts already exist.'
+            )
 
-            const replacement =
-          `  'v.douyin.com': {
-            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
-            getRoomInfoFn: getDouYinRoomInfoPlugin
-          },
-
-          'www.douyin.com': {
-            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
-            getRoomInfoFn: getDouYinRoomInfoPlugin
-          },
-
-          'douyin.com': {
-            getLiveUrlsFn: getDouYinLiveUrlsPlugin,
-            getRoomInfoFn: getDouYinRoomInfoPlugin
-          },`
-
-            if (
-              !text.includes(marker)
-            ) {
-              throw new Error(
-                'Douyin crawler host insertion point not found'
-              )
-            }
-
-            text =
-              text.replace(
-                marker,
-                replacement
-              )
+            process.exit(0)
           }
+
+          const lines =
+            text.split(/\r?\n/)
+
+          const start =
+            lines.findIndex(
+              line =>
+                line.includes(
+                  "'v.douyin.com':"
+                )
+            )
+
+          if (
+            start < 0
+          ) {
+            throw new Error(
+              'v.douyin.com crawler block not found'
+            )
+          }
+
+          let end =
+            -1
+
+          for (
+            let i = start + 1;
+            i < lines.length;
+            i++
+          ) {
+            if (
+              lines[i].trim() ===
+              '},'
+            ) {
+              end = i
+              break
+            }
+          }
+
+          if (
+            end < 0
+          ) {
+            throw new Error(
+              'v.douyin.com crawler block end not found'
+            )
+          }
+
+          const block = [
+            '',
+            "  'www.douyin.com': {",
+            '    getLiveUrlsFn: getDouYinLiveUrlsPlugin,',
+            '    getRoomInfoFn: getDouYinRoomInfoPlugin',
+            '  },',
+            '',
+            "  'douyin.com': {",
+            '    getLiveUrlsFn: getDouYinLiveUrlsPlugin,',
+            '    getRoomInfoFn: getDouYinRoomInfoPlugin',
+            '  },'
+          ]
+
+          lines.splice(
+            end + 1,
+            0,
+            ...block
+          )
+
+          text =
+            lines.join('\n')
 
           fs.writeFileSync(
             path,
@@ -114,15 +151,23 @@ jobs:
           )
 
           console.log(
-            'Douyin profile hosts enabled.'
+            'Douyin profile hosts added.'
           )
           NODE
 
       # ============================================================
-      # 2. 给 douyin.js 增加主播主页解析 / 离线查询
+      # 2. 抖音主播主页解析
+      #
+      # 主播离线：
+      #   主页 URL -> sec_uid -> 查询用户 -> NOT_URLS
+      #
+      # 主播开播：
+      #   主页 URL -> sec_uid -> web_rid
+      #   -> live.douyin.com/web_rid
+      #   -> 继续使用 V2.7 直播流解析
       # ============================================================
 
-      - name: Add Douyin anchor profile resolver
+      - name: Add Douyin anchor monitor parser
         run: |
           node <<'NODE'
           const fs = require('fs')
@@ -136,25 +181,32 @@ jobs:
               'utf8'
             )
 
-          const helperMarker =
-            'async function getDesktopRoomWithFallback('
-
-          if (
-            !text.includes(
-              helperMarker
-            )
-          ) {
-            throw new Error(
-              'getDesktopRoomWithFallback marker not found'
-            )
-          }
+          // ========================================================
+          // 插入主播主页相关 helper
+          // ========================================================
 
           if (
             !text.includes(
               'async function getDouyinAnchorProfile('
             )
           ) {
-            const helpers = `
+            const marker =
+              'async function getDesktopRoomWithFallback('
+
+            const markerIndex =
+              text.indexOf(
+                marker
+              )
+
+            if (
+              markerIndex < 0
+            ) {
+              throw new Error(
+                'getDesktopRoomWithFallback not found'
+              )
+            }
+
+            const helper = `
           function getDouyinProfileSecUid(
             inputUrl
           ) {
@@ -183,9 +235,9 @@ jobs:
                   .filter(Boolean)
 
               if (
+                parts.length < 2 ||
                 parts[0] !==
-                  'user' ||
-                !parts[1]
+                  'user'
               ) {
                 return ''
               }
@@ -230,41 +282,40 @@ jobs:
           }
 
 
-          function findDouyinValue(
+          function findDouyinNestedValue(
             value,
-            names,
+            keys,
             depth = 0
           ) {
             if (
               !value ||
               typeof value !==
                 'object' ||
-              depth > 7
+              depth > 8
             ) {
               return undefined
             }
 
             for (
-              const name of names
+              const key of keys
             ) {
-              const result =
-                value[name]
-
               if (
-                result !==
+                value[key] !==
                   undefined &&
-                result !==
+                value[key] !==
                   null &&
-                result !==
+                value[key] !==
                   ''
               ) {
-                return result
+                return value[key]
               }
             }
 
             for (
               const child of
-              Object.values(value)
+              Object.values(
+                value
+              )
             ) {
               if (
                 !child ||
@@ -274,18 +325,18 @@ jobs:
                 continue
               }
 
-              const found =
-                findDouyinValue(
+              const result =
+                findDouyinNestedValue(
                   child,
-                  names,
+                  keys,
                   depth + 1
                 )
 
               if (
-                found !==
+                result !==
                 undefined
               ) {
-                return found
+                return result
               }
             }
 
@@ -369,12 +420,6 @@ jobs:
               round_trip_time:
                 '50',
 
-              publish_video_strategy_type:
-                '2',
-
-              personal_center_strategy:
-                '1',
-
               sec_user_id:
                 secUid,
 
@@ -414,7 +459,7 @@ jobs:
                 PC_USER_AGENT
             }
 
-            let generatedCookie =
+            let generatedCookies =
               ''
 
             try {
@@ -427,17 +472,17 @@ jobs:
                   }
                 )
 
-              generatedCookie =
+              generatedCookies =
                 joinSetCookies(
                   bootstrap
                 )
             } catch {
-              // Existing login cookie may
-              // still be sufficient.
+              // Login cookie may
+              // already be available.
             }
 
             const finalCookie = [
-              generatedCookie,
+              generatedCookies,
               cookie
             ]
               .filter(Boolean)
@@ -491,7 +536,7 @@ jobs:
 
             if (!body) {
               throw new Error(
-                'DOUYIN_PROFILE_EMPTY'
+                'DOUYIN_PROFILE_RESPONSE_EMPTY'
               )
             }
 
@@ -499,6 +544,7 @@ jobs:
               body?.user ||
               body?.data?.user ||
               body?.user_info ||
+              body?.data?.user_info ||
               body?.data ||
               {}
 
@@ -516,7 +562,7 @@ jobs:
 
             const nickname =
               user?.nickname ||
-              findDouyinValue(
+              findDouyinNestedValue(
                 user,
                 [
                   'nickname',
@@ -525,35 +571,48 @@ jobs:
               ) ||
               ''
 
-            const userLiveStatus =
+            const rawLiveStatus =
+              user?.live_status ??
+              user?.liveStatus ??
+              findDouyinNestedValue(
+                user,
+                [
+                  'live_status',
+                  'liveStatus'
+                ]
+              ) ??
+              0
+
+            const rawRoomStatus =
+              roomData?.status ??
+              roomData?.room?.status ??
+              findDouyinNestedValue(
+                roomData,
+                [
+                  'status'
+                ]
+              ) ??
+              0
+
+            const liveStatus =
               Number(
-                user?.live_status ??
-                user?.liveStatus ??
-                0
+                rawLiveStatus
               )
 
             const roomStatus =
               Number(
-                roomData?.status ??
-                roomData?.room?.status ??
-                findDouyinValue(
-                  roomData,
-                  [
-                    'status'
-                  ]
-                ) ??
-                0
+                rawRoomStatus
               )
 
             const rawWebRid =
-              findDouyinValue(
+              findDouyinNestedValue(
                 roomData,
                 [
                   'web_rid',
                   'webRid'
                 ]
               ) ??
-              findDouyinValue(
+              findDouyinNestedValue(
                 user,
                 [
                   'web_rid',
@@ -569,12 +628,12 @@ jobs:
                 : ''
 
             const live =
-              userLiveStatus === 1 ||
-              userLiveStatus === 2 ||
+              liveStatus === 1 ||
+              liveStatus === 2 ||
               roomStatus === 2
 
             log(
-              'Douyin anchor profile:',
+              'Douyin anchor status:',
               {
                 nickname,
                 live,
@@ -616,7 +675,7 @@ jobs:
 
             if (
               parsed.hostname ===
-              'v.douyin.com'
+                'v.douyin.com'
             ) {
               const response =
                 await request(
@@ -687,7 +746,7 @@ jobs:
           }
 
 
-          async function resolveAnchorLiveRoom(
+          async function resolveDouyinAnchorLiveRoom(
             secUid,
             others = {}
           ) {
@@ -698,17 +757,7 @@ jobs:
               )
 
             if (
-              !profile.live
-            ) {
-              return {
-                code:
-                  CRAWLER_ERROR_CODE.NOT_URLS,
-
-                profile
-              }
-            }
-
-            if (
+              !profile.live ||
               !profile.webRid
             ) {
               return {
@@ -735,38 +784,42 @@ jobs:
           `
 
             text =
-              text.replace(
-                helperMarker,
-                helpers +
-                helperMarker
+              text.slice(
+                0,
+                markerIndex
+              ) +
+              helper +
+              text.slice(
+                markerIndex
               )
           }
 
-          // ==================================================
-          // 替换 getLiveUrls 入口
-          // ==================================================
+          // ========================================================
+          // 替换 getLiveUrls 主入口
+          // ========================================================
 
-          const liveStart =
-            text.indexOf(
-              'async function baseGetDouYinLiveUrlsPlugin('
-            )
+          {
+            const start =
+              text.indexOf(
+                'async function baseGetDouYinLiveUrlsPlugin('
+              )
 
-          const mobileStart =
-            text.indexOf(
-              'async function baseGetMobileDouYinLiveUrlsPlugin(',
-              liveStart
-            )
+            const end =
+              text.indexOf(
+                'async function baseGetMobileDouYinLiveUrlsPlugin(',
+                start
+              )
 
-          if (
-            liveStart < 0 ||
-            mobileStart <= liveStart
-          ) {
-            throw new Error(
-              'baseGetDouYinLiveUrlsPlugin boundaries not found'
-            )
-          }
+            if (
+              start < 0 ||
+              end <= start
+            ) {
+              throw new Error(
+                'Douyin live URL function boundary not found'
+              )
+            }
 
-          const newLiveFunction = `
+            const replacement = `
           async function baseGetDouYinLiveUrlsPlugin(
             roomUrl,
             others = {}
@@ -781,14 +834,14 @@ jobs:
               target.type ===
               'anchor'
             ) {
-              const result =
-                await resolveAnchorLiveRoom(
+              const anchor =
+                await resolveDouyinAnchorLiveRoom(
                   target.secUid,
                   others
                 )
 
               if (
-                result.code !==
+                anchor.code !==
                 SUCCESS_CODE
               ) {
                 return {
@@ -798,7 +851,7 @@ jobs:
               }
 
               return await baseGetDesktopDouYinLiveUrlsPlugin(
-                result.roomUrl,
+                anchor.roomUrl,
                 others
               )
             }
@@ -812,42 +865,44 @@ jobs:
 
           `
 
-          text =
-            text.slice(
-              0,
-              liveStart
-            ) +
-            newLiveFunction +
-            text.slice(
-              mobileStart
-            )
-
-          // ==================================================
-          // 替换房间信息入口
-          // 离线主播主页也能获取昵称
-          // ==================================================
-
-          const infoStart =
-            text.indexOf(
-              'async function baseGetDouYinRoomInfoPlugin('
-            )
-
-          const exportStart =
-            text.indexOf(
-              'export const getDouYinLiveUrlsPlugin',
-              infoStart
-            )
-
-          if (
-            infoStart < 0 ||
-            exportStart <= infoStart
-          ) {
-            throw new Error(
-              'RoomInfo function boundaries not found'
-            )
+            text =
+              text.slice(
+                0,
+                start
+              ) +
+              replacement +
+              text.slice(
+                end
+              )
           }
 
-          const newInfoFunction = `
+          // ========================================================
+          // 替换 getRoomInfo
+          // 离线主播仍可返回昵称
+          // ========================================================
+
+          {
+            const start =
+              text.indexOf(
+                'async function baseGetDouYinRoomInfoPlugin('
+              )
+
+            const end =
+              text.indexOf(
+                'export const getDouYinLiveUrlsPlugin',
+                start
+              )
+
+            if (
+              start < 0 ||
+              end <= start
+            ) {
+              throw new Error(
+                'Douyin room info function boundary not found'
+              )
+            }
+
+            const replacement = `
           async function baseGetDouYinRoomInfoPlugin(
             roomUrl,
             others = {}
@@ -903,15 +958,16 @@ jobs:
 
           `
 
-          text =
-            text.slice(
-              0,
-              infoStart
-            ) +
-            newInfoFunction +
-            text.slice(
-              exportStart
-            )
+            text =
+              text.slice(
+                0,
+                start
+              ) +
+              replacement +
+              text.slice(
+                end
+              )
+          }
 
           fs.writeFileSync(
             path,
@@ -920,274 +976,20 @@ jobs:
           )
 
           console.log(
-            'Douyin anchor monitor parser installed.'
+            'Douyin anchor monitor parser added.'
           )
           NODE
 
       # ============================================================
-      # 3. 创建页支持主播主页离线添加
+      # 3. 修改界面文案
+      #
+      # 不动线路 Select 逻辑。
+      # 主播离线时直接保存即可。
+      # 默认 line=0 / liveUrls=[]。
+      # 开始监控以后动态查询。
       # ============================================================
 
-      - name: Update stream config UI
-        run: |
-          node <<'NODE'
-          const fs = require('fs')
-
-          const path =
-            'src/renderer/src/components/StreamConfigSheet.tsx'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          // ==================================================
-          // import CRAWLER_ERROR_CODE
-          // ==================================================
-
-          text =
-            text.replace(
-              "import { errorCodeToI18nMessage, SUCCESS_CODE } from '../../../code'",
-
-              "import { CRAWLER_ERROR_CODE, errorCodeToI18nMessage, SUCCESS_CODE } from '../../../code'"
-            )
-
-          // ==================================================
-          // 添加主播主页判断函数
-          // ==================================================
-
-          if (
-            !text.includes(
-              'function isDouyinAnchorUrl('
-            )
-          ) {
-            const marker =
-              'const defaultStreamConfig: IStreamConfig = {'
-
-            const helper =
-          `function isDouyinAnchorUrl(
-            value: string
-          ) {
-            try {
-              const url =
-                new URL(
-                  value
-                )
-
-              const host =
-                url.hostname
-                  .toLowerCase()
-
-              return (
-                (
-                  host ===
-                    'www.douyin.com' ||
-                  host ===
-                    'douyin.com'
-                ) &&
-                url.pathname.startsWith(
-                  '/user/'
-                )
-              )
-            } catch {
-              return false
-            }
-          }
-
-
-          `
-
-            if (
-              !text.includes(marker)
-            ) {
-              throw new Error(
-                'defaultStreamConfig marker not found'
-              )
-            }
-
-            text =
-              text.replace(
-                marker,
-                helper +
-                marker
-              )
-          }
-
-          // ==================================================
-          // 当前地址监听
-          // ==================================================
-
-          const stateMarker =
-            "  const [liveUrls, setLiveUrls] = useState(form.getValues('liveUrls'))"
-
-          if (
-            text.includes(
-              stateMarker
-            ) &&
-            !text.includes(
-              "const currentRoomUrl = form.watch('roomUrl')"
-            )
-          ) {
-            text =
-              text.replace(
-                stateMarker,
-
-          `${stateMarker}
-
-            const currentRoomUrl =
-              form.watch(
-                'roomUrl'
-              )`
-              )
-          }
-
-          // ==================================================
-          // 离线主播主页不再弹红色错误
-          // ==================================================
-
-          const oldErrorBlock =
-          `    if (code !== SUCCESS_CODE) {
-                toast({
-                  title: form.getValues('title'),
-                  description: t(errorCodeToI18nMessage(code, 'error.get_line.')),
-                  variant: 'destructive'
-                })
-                return
-              }
-              setLiveUrls(liveUrls)`
-
-          const newErrorBlock =
-          `    if (code !== SUCCESS_CODE) {
-                const roomUrl =
-                  form.getValues(
-                    'roomUrl'
-                  )
-
-                if (
-                  code ===
-                    CRAWLER_ERROR_CODE.NOT_URLS &&
-                  isDouyinAnchorUrl(
-                    roomUrl
-                  )
-                ) {
-                  form.setValue(
-                    'line',
-                    '0'
-                  )
-
-                  setLiveUrls([])
-
-                  return
-                }
-
-                toast({
-                  title:
-                    form.getValues(
-                      'title'
-                    ),
-
-                  description:
-                    t(
-                      errorCodeToI18nMessage(
-                        code,
-                        'error.get_line.'
-                      )
-                    ),
-
-                  variant:
-                    'destructive'
-                })
-
-                return
-              }
-
-              setLiveUrls(
-                liveUrls
-              )`
-
-          if (
-            !text.includes(
-              oldErrorBlock
-            )
-          ) {
-            throw new Error(
-              'handleGetLiveUrls error block not found'
-            )
-          }
-
-          text =
-            text.replace(
-              oldErrorBlock,
-              newErrorBlock
-            )
-
-          // ==================================================
-          // 没开播时线路显示“自动获取”
-          // ==================================================
-
-          const oldSelect =
-          `                          {liveUrls.length > 0 ? (
-                            liveUrls.map((_, index) => (
-                              <SelectItem key={index} value={String(index)}>
-                                {t('stream_config.line')} {index + 1}
-                              </SelectItem>
-                            ))
-                          ) : (
-                            <SelectItem disabled value="loading">
-                              {t('stream_config.loading')}
-                            </SelectItem>
-                          )}`
-
-          const newSelect =
-          `                          {liveUrls.length > 0 ? (
-                            liveUrls.map((_, index) => (
-                              <SelectItem key={index} value={String(index)}>
-                                {t('stream_config.line')} {index + 1}
-                              </SelectItem>
-                            ))
-                          ) : isDouyinAnchorUrl(currentRoomUrl) ? (
-                            <SelectItem value="0">
-                              {t('stream_config.auto_line_when_live')}
-                            </SelectItem>
-                          ) : (
-                            <SelectItem disabled value="loading">
-                              {t('stream_config.loading')}
-                            </SelectItem>
-                          )}`
-
-          if (
-            !text.includes(
-              oldSelect
-            )
-          ) {
-            throw new Error(
-              'Line select block not found'
-            )
-          }
-
-          text =
-            text.replace(
-              oldSelect,
-              newSelect
-            )
-
-          fs.writeFileSync(
-            path,
-            text,
-            'utf8'
-          )
-
-          console.log(
-            'Offline anchor UI enabled.'
-          )
-          NODE
-
-      # ============================================================
-      # 4. 中文 / 英文文案
-      # ============================================================
-
-      - name: Update locale text
+      - name: Update Douyin profile UI text
         run: |
           node <<'NODE'
           const fs = require('fs')
@@ -1210,21 +1012,18 @@ jobs:
           text =
             text.replace(
               "room_url_placeholder: 'Please enter the stream URL',",
-
               "room_url_placeholder: 'Enter a live-room URL or Douyin streamer profile URL',"
             )
 
           text =
             text.replace(
               "room_url_can_not_be_empty: 'Stream URL cannot be empty',",
-
               "room_url_can_not_be_empty: 'Live room / streamer profile URL cannot be empty',"
             )
 
           text =
             text.replace(
               "room_url_invalid: 'Stream URL is invalid',",
-
               "room_url_invalid: 'Live room / streamer profile URL is invalid',"
             )
 
@@ -1237,51 +1036,20 @@ jobs:
           text =
             text.replace(
               "room_url_placeholder: '请输入直播间地址',",
-
               "room_url_placeholder: '请输入直播间地址或抖音主播主页地址',"
             )
 
           text =
             text.replace(
               "room_url_can_not_be_empty: '直播间地址不能为空',",
-
               "room_url_can_not_be_empty: '直播间或主播主页地址不能为空',"
             )
 
           text =
             text.replace(
               "room_url_invalid: '直播间地址不合法',",
-
               "room_url_invalid: '直播间或主播主页地址不合法',"
             )
-
-          if (
-            !text.includes(
-              "auto_line_when_live: 'Automatically fetch when live'"
-            )
-          ) {
-            text =
-              text.replace(
-                "line_placeholder: 'Please select a line',",
-
-          `line_placeholder: 'Please select a line',
-                auto_line_when_live: 'Automatically fetch when live',`
-              )
-          }
-
-          if (
-            !text.includes(
-              "auto_line_when_live: '开播后自动获取'"
-            )
-          ) {
-            text =
-              text.replace(
-                "line_placeholder: '请选择线路',",
-
-          `line_placeholder: '请选择线路',
-                auto_line_when_live: '开播后自动获取',`
-              )
-          }
 
           fs.writeFileSync(
             path,
@@ -1290,12 +1058,12 @@ jobs:
           )
 
           console.log(
-            'Locales updated.'
+            'Douyin profile UI text updated.'
           )
           NODE
 
       # ============================================================
-      # 5. 版本号
+      # 4. 版本
       # ============================================================
 
       - name: Update version
@@ -1307,10 +1075,10 @@ jobs:
             --no-git-tag-version
 
       # ============================================================
-      # 6. 静态检查
+      # 5. 确认主播主页支持确实加入
       # ============================================================
 
-      - name: Verify V2.8 source changes
+      - name: Verify anchor monitor source
         run: |
           grep -q \
             "'www.douyin.com':" \
@@ -1333,7 +1101,7 @@ jobs:
             src/main/crawler/plugins/douyin.js
 
           grep -q \
-            "resolveAnchorLiveRoom" \
+            "resolveDouyinAnchorLiveRoom" \
             src/main/crawler/plugins/douyin.js
 
           grep -q \
@@ -1345,19 +1113,32 @@ jobs:
             src/main/crawler/plugins/douyin.js
 
           grep -q \
-            "auto_line_when_live" \
-            src/renderer/src/components/StreamConfigSheet.tsx
-
-          grep -q \
             "主播主页地址" \
             src/renderer/src/locales/locales.js
 
+          echo \
+            "Anchor monitor source verification passed."
+
+      # ============================================================
+      # 6. 确认 V2.7 原有核心功能没有被破坏
+      # ============================================================
+
+      - name: Verify V2.7 core retained
+        run: |
           grep -q \
             "handleMonitorOnly" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
           grep -q \
+            "autoRecord: boolean" \
+            type.d.ts
+
+          grep -q \
             "getQualityRank" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "candidate_resolution" \
             src/main/crawler/plugins/douyin.js
 
           grep -q \
@@ -1369,19 +1150,19 @@ jobs:
             src/main/ffmpeg/record.ts
 
           echo \
-            "V2.8 source verification passed."
+            "V2.7 recording core retained."
 
       # ============================================================
-      # 7. 确保 V2.7 的预览功能没有回来
+      # 7. 确认预览功能没有回来
       # ============================================================
 
-      - name: Verify preview still removed
+      - name: Verify preview remains removed
         run: |
           LEFTOVERS="$(
             grep -R \
               -n \
               -E \
-              'START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|StreamPreviewDialog|startStreamPreview|preview-transcoder|preview-proxy' \
+              'START_STREAM_PREVIEW|STOP_STREAM_PREVIEW|startStreamPreview|StreamPreviewDialog|preview-transcoder|preview-proxy' \
               src \
               || true
           )"
@@ -1391,7 +1172,7 @@ jobs:
             echo "$LEFTOVERS"
 
             echo \
-              "Preview feature unexpectedly returned."
+              "Preview code unexpectedly returned."
 
             exit 1
           fi
@@ -1408,7 +1189,7 @@ jobs:
           npm run typecheck
 
       # ============================================================
-      # 9. Build
+      # 9. Electron Build
       # ============================================================
 
       - name: Build Electron
@@ -1427,7 +1208,7 @@ jobs:
             --x64 \
             --publish never
 
-      - name: Verify installer
+      - name: Verify Windows installer
         shell: pwsh
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -1453,7 +1234,7 @@ jobs:
             $installers.Count -eq 0
           ) {
             throw \
-              "Windows installer not generated."
+              "Windows x64 installer not generated."
           }
 
           Write-Host \
@@ -1468,7 +1249,7 @@ jobs:
               -AutoSize
 
       # ============================================================
-      # 11. 成功以后才保存测试分支
+      # 11. 只有全部成功以后才提交测试分支
       # ============================================================
 
       - name: Commit V2.8 source
@@ -1489,7 +1270,7 @@ jobs:
               "No source changes."
           else
             git commit \
-              -m "Add Douyin offline streamer profile monitoring"
+              -m "Add Douyin offline anchor monitoring"
           fi
 
           git push \
@@ -1523,11 +1304,11 @@ jobs:
             echo
             echo "- Supports Douyin live-room URLs"
             echo "- Supports Douyin streamer profile URLs"
-            echo "- Streamer can be added while offline"
-            echo "- Uses sec_user_id for profile monitoring"
-            echo "- Resolves web_rid automatically after streamer goes live"
-            echo "- Reuses existing highest-quality stream selection"
-            echo "- Reuses existing automatic recording"
-            echo "- Reuses notify-only monitoring"
-            echo "- V2.7 preview remains removed"
+            echo "- Offline streamer profile can be saved"
+            echo "- Uses sec_user_id for monitoring"
+            echo "- Resolves web_rid after streamer goes live"
+            echo "- Keeps V2.7 recording quality logic"
+            echo "- Keeps auto-record mode"
+            echo "- Keeps notify-only mode"
+            echo "- Preview remains removed"
           } >> "$GITHUB_STEP_SUMMARY"
