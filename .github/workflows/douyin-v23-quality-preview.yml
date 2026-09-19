@@ -39,15 +39,15 @@ jobs:
           node-version: "20.15.0"
           cache: npm
 
-      - name: Install existing dependencies
+      - name: Install dependencies
         run: |
           npm ci
 
-      - name: Add HLS preview dependency
+      - name: Install HLS preview dependency
         run: |
           npm install hls.js@1.7.3 --save-exact
 
-      - name: Create internal HLS preview component
+      - name: Create internal preview component
         run: |
           cat > src/renderer/src/components/StreamPreviewDialog.tsx <<'TSX'
           import { useEffect, useRef, useState } from 'react'
@@ -80,28 +80,29 @@ jobs:
             } = props
 
             const videoRef =
-              useRef<HTMLVideoElement | null>(null)
+              useRef<HTMLVideoElement | null>(
+                null
+              )
 
             const [error, setError] =
               useState(false)
 
             useEffect(() => {
+              const video =
+                videoRef.current
+
               if (
                 !open ||
                 !url ||
-                !videoRef.current
+                !video
               ) {
                 return
               }
 
-              const video =
-                videoRef.current
-
               setError(false)
 
-              let hls:
-                | Hls
-                | null = null
+              let hls: Hls | null =
+                null
 
               const cleanup = () => {
                 if (hls) {
@@ -110,7 +111,9 @@ jobs:
                 }
 
                 video.pause()
-                video.removeAttribute('src')
+                video.removeAttribute(
+                  'src'
+                )
                 video.load()
               }
 
@@ -123,9 +126,7 @@ jobs:
 
                 video
                   .play()
-                  .catch(() => {
-                    // Browser may require user interaction.
-                  })
+                  .catch(() => {})
 
                 return cleanup
               }
@@ -136,7 +137,8 @@ jobs:
                 hls = new Hls({
                   lowLatencyMode: true,
                   backBufferLength: 30,
-                  maxBufferLength: 30
+                  maxBufferLength: 30,
+                  maxMaxBufferLength: 60
                 })
 
                 hls.loadSource(url)
@@ -147,18 +149,46 @@ jobs:
                   () => {
                     video
                       .play()
-                      .catch(() => {
-                        // Browser may require user interaction.
-                      })
+                      .catch(() => {})
                   }
                 )
 
                 hls.on(
                   Hls.Events.ERROR,
                   (_, data) => {
-                    if (data.fatal) {
-                      setError(true)
+                    if (
+                      !data.fatal
+                    ) {
+                      return
                     }
+
+                    if (
+                      data.type ===
+                      Hls.ErrorTypes.NETWORK_ERROR
+                    ) {
+                      try {
+                        hls?.startLoad()
+                        return
+                      } catch {
+                        setError(true)
+                        return
+                      }
+                    }
+
+                    if (
+                      data.type ===
+                      Hls.ErrorTypes.MEDIA_ERROR
+                    ) {
+                      try {
+                        hls?.recoverMediaError()
+                        return
+                      } catch {
+                        setError(true)
+                        return
+                      }
+                    }
+
+                    setError(true)
                   }
                 )
 
@@ -173,7 +203,9 @@ jobs:
             return (
               <Dialog
                 open={open}
-                onOpenChange={onOpenChange}
+                onOpenChange={
+                  onOpenChange
+                }
               >
                 <DialogContent className="max-w-[900px]">
                   <DialogHeader>
@@ -201,10 +233,25 @@ jobs:
           }
           TSX
 
-      - name: Create V2.3 patch script
+      - name: Create V2.3 source patch
+        env:
+          APP_VERSION: ${{ inputs.version }}
         run: |
           cat > "$RUNNER_TEMP/patch-v23.cjs" <<'NODE'
           const fs = require('fs')
+
+          const version =
+            process.env.APP_VERSION
+
+          if (
+            !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(
+              version
+            )
+          ) {
+            throw new Error(
+              `Invalid version: ${version}`
+            )
+          }
 
           function read(path) {
             return fs.readFileSync(
@@ -224,31 +271,64 @@ jobs:
             )
           }
 
-          function replaceOnce(
+          function assertContains(
             source,
-            oldText,
-            newText,
+            text,
             label
           ) {
             if (
-              !source.includes(oldText)
+              !source.includes(text)
             ) {
               throw new Error(
-                `Patch target not found: ${label}`
+                `Missing source marker: ${label}`
+              )
+            }
+          }
+
+          function replaceRange(
+            source,
+            startMarker,
+            endMarker,
+            replacement,
+            label
+          ) {
+            const start =
+              source.indexOf(
+                startMarker
+              )
+
+            const end =
+              source.indexOf(
+                endMarker,
+                start
+              )
+
+            if (
+              start < 0 ||
+              end < 0 ||
+              end <= start
+            ) {
+              throw new Error(
+                `Unable to patch: ${label}`
               )
             }
 
-            return source.replace(
-              oldText,
-              newText
+            return (
+              source.slice(
+                0,
+                start
+              ) +
+              replacement +
+              source.slice(
+                end
+              )
             )
           }
 
-          // ========================================================
-          // 1. Douyin streams:
-          // sort by video bitrate,
-          // FLV first when bitrate is equal.
-          // ========================================================
+
+          // ======================================================
+          // 1. Douyin quality sorting
+          // ======================================================
 
           const douyinPath =
             'src/main/crawler/plugins/douyin.js'
@@ -256,28 +336,19 @@ jobs:
           let douyin =
             read(douyinPath)
 
-          const streamBlockStart =
-            douyin.indexOf(
-              'function collectMainStreams('
-            )
+          assertContains(
+            douyin,
+            'function collectMainStreams(',
+            'collectMainStreams'
+          )
 
-          const streamBlockEnd =
-            douyin.indexOf(
-              'function getDesktopRoom('
-            )
+          assertContains(
+            douyin,
+            'function getDesktopRoom(',
+            'getDesktopRoom'
+          )
 
-          if (
-            streamBlockStart < 0 ||
-            streamBlockEnd < 0 ||
-            streamBlockEnd <=
-              streamBlockStart
-          ) {
-            throw new Error(
-              'Douyin stream collection block not found'
-            )
-          }
-
-          const newStreamBlock = String.raw`
+          const qualityCode = String.raw`
           function getStreamBitrate(
             main
           ) {
@@ -285,23 +356,25 @@ jobs:
               const raw =
                 main?.sdk_params
 
-              const sdkParams =
+              const params =
                 typeof raw === 'string'
                   ? JSON.parse(raw)
                   : raw
 
-              const bitrate =
+              const value =
                 Number(
-                  sdkParams?.vbitrate ||
-                  sdkParams?.bitrate ||
+                  params?.vbitrate ||
+                  params?.bitrate ||
                   0
                 )
 
-              return Number.isFinite(
-                bitrate
+              return (
+                Number.isFinite(
+                  value
+                )
+                  ? value
+                  : 0
               )
-                ? bitrate
-                : 0
             } catch {
               return 0
             }
@@ -310,10 +383,10 @@ jobs:
           function collectMainStreamCandidates(
             streamData
           ) {
-            const candidates = []
+            const result = []
 
             if (!streamData) {
-              return candidates
+              return result
             }
 
             try {
@@ -332,7 +405,9 @@ jobs:
                 const [
                   quality,
                   streamInfo
-                ] of Object.entries(data)
+                ] of Object.entries(
+                  data
+                )
               ) {
                 const main =
                   streamInfo?.main
@@ -342,31 +417,37 @@ jobs:
                 }
 
                 const bitrate =
-                  getStreamBitrate(main)
+                  getStreamBitrate(
+                    main
+                  )
 
                 if (main.flv) {
-                  candidates.push({
-                    url: main.flv,
-                    type: 'flv',
+                  result.push({
+                    url:
+                      main.flv,
+                    type:
+                      'flv',
                     quality,
                     bitrate
                   })
                 }
 
                 if (main.hls) {
-                  candidates.push({
-                    url: main.hls,
-                    type: 'hls',
+                  result.push({
+                    url:
+                      main.hls,
+                    type:
+                      'hls',
                     quality,
                     bitrate
                   })
                 }
               }
             } catch {
-              // Ignore malformed stream data.
+              // Ignore malformed stream info.
             }
 
-            return candidates
+            return result
           }
 
           function collectDesktopStreams(
@@ -380,7 +461,8 @@ jobs:
             }
 
             const candidates = []
-            const seen = new Set()
+            const seen =
+              new Set()
 
             const addCandidate =
               (candidate) => {
@@ -412,12 +494,14 @@ jobs:
                 })
               }
 
-            const addCandidates =
+            const addList =
               (items) => {
                 for (
                   const item of items
                 ) {
-                  addCandidate(item)
+                  addCandidate(
+                    item
+                  )
                 }
               }
 
@@ -431,7 +515,7 @@ jobs:
                   pullDatas
                 )
               ) {
-                addCandidates(
+                addList(
                   collectMainStreamCandidates(
                     item?.stream_data
                   )
@@ -445,7 +529,7 @@ jobs:
                 ?.pull_data
                 ?.stream_data
 
-            addCandidates(
+            addList(
               collectMainStreamCandidates(
                 coreData
               )
@@ -508,22 +592,21 @@ jobs:
                 }
 
                 if (
-                  a.type !==
-                  b.type
+                  a.type ===
+                    'flv' &&
+                  b.type !==
+                    'flv'
                 ) {
-                  if (
-                    a.type ===
-                    'flv'
-                  ) {
-                    return -1
-                  }
+                  return -1
+                }
 
-                  if (
-                    b.type ===
+                if (
+                  b.type ===
+                    'flv' &&
+                  a.type !==
                     'flv'
-                  ) {
-                    return 1
-                  }
+                ) {
+                  return 1
                 }
 
                 return 0
@@ -540,13 +623,12 @@ jobs:
           `
 
           douyin =
-            douyin.slice(
-              0,
-              streamBlockStart
-            ) +
-            newStreamBlock +
-            douyin.slice(
-              streamBlockEnd
+            replaceRange(
+              douyin,
+              'function collectMainStreams(',
+              'function getDesktopRoom(',
+              qualityCode,
+              'Douyin stream quality sorting'
             )
 
           write(
@@ -554,10 +636,11 @@ jobs:
             douyin
           )
 
-          // ========================================================
-          // 2. FFmpeg:
-          // remove -re and add HTTP reconnect protection.
-          // ========================================================
+
+          // ======================================================
+          // 2. FFmpeg recording:
+          // remove -re, add reconnect.
+          // ======================================================
 
           const recordPath =
             'src/main/ffmpeg/record.ts'
@@ -565,15 +648,24 @@ jobs:
           let record =
             read(recordPath)
 
-          const oldRecordInput =
-          `  const ffmpegProcess = ffmpeg().addInput(liveUrls![Number(line)])
+          const ffmpegPattern =
+            /const\s+ffmpegProcess\s*=\s*ffmpeg\(\)\.addInput\(\s*liveUrls!\[Number\(line\)\]\s*\)\s*ffmpegProcess\.inputOptions\(\s*\[\s*['"]-re['"]\s*\]\s*\)/m
 
-            ffmpegProcess.inputOptions(['-re'])
-          `
+          if (
+            !ffmpegPattern.test(
+              record
+            )
+          ) {
+            throw new Error(
+              'FFmpeg source block not found'
+            )
+          }
 
-          const newRecordInput =
-          `  const selectedLiveUrl =
-            liveUrls![Number(line)]
+          record =
+            record.replace(
+              ffmpegPattern,
+              `const selectedLiveUrl =
+              liveUrls![Number(line)]
 
             const ffmpegProcess =
               ffmpeg().addInput(
@@ -591,25 +683,19 @@ jobs:
                 '-reconnect_streamed 1',
                 '-reconnect_delay_max 5'
               ])
-            }
-          `
-
-          record = replaceOnce(
-            record,
-            oldRecordInput,
-            newRecordInput,
-            'FFmpeg input options'
-          )
+            }`
+            )
 
           write(
             recordPath,
             record
           )
 
-          // ========================================================
-          // 3. Douyin recording always selects
-          // the first stream after bitrate sorting.
-          // ========================================================
+
+          // ======================================================
+          // 3. Douyin recording always uses
+          // first entry after quality sorting.
+          // ======================================================
 
           const mainPath =
             'src/main/index.ts'
@@ -617,40 +703,44 @@ jobs:
           let main =
             read(mainPath)
 
-          const oldAssign =
-          `    streamConfig.liveUrls = liveUrls
+          const mainPattern =
+            /streamConfig\.liveUrls\s*=\s*liveUrls\s*\r?\n\s*\r?\n\s*const\s+\{\s*code:\s*recordStreamCode\s*\}\s*=\s*await\s+recordStream\(/m
 
-            const { code: recordStreamCode } = await recordStream(
-          `
+          if (
+            !mainPattern.test(
+              main
+            )
+          ) {
+            throw new Error(
+              'Main recording selection block not found'
+            )
+          }
 
-          const newAssign =
-          `    streamConfig.liveUrls = liveUrls
+          main =
+            main.replace(
+              mainPattern,
+              `streamConfig.liveUrls = liveUrls
 
             if (
-              isDouyinUrl(roomUrl)
+              isDouyinUrl(
+                roomUrl
+              )
             ) {
               streamConfig.line = '0'
             }
 
-            const { code: recordStreamCode } = await recordStream(
-          `
-
-          main = replaceOnce(
-            main,
-            oldAssign,
-            newAssign,
-            'Douyin highest-quality selection'
-          )
+            const { code: recordStreamCode } = await recordStream(`
+            )
 
           write(
             mainPath,
             main
           )
 
-          // ========================================================
-          // 4. Replace external fideo.site preview
-          // with internal HLS preview dialog.
-          // ========================================================
+
+          // ======================================================
+          // 4. Internal preview
+          // ======================================================
 
           const operationPath =
             'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
@@ -658,35 +748,61 @@ jobs:
           let operation =
             read(operationPath)
 
-          operation = replaceOnce(
-            operation,
-            `import Dialog from '@/components/Dialog'
-          `,
-            `import Dialog from '@/components/Dialog'
-          import StreamPreviewDialog from '@/components/StreamPreviewDialog'
-          `,
-            'preview component import'
-          )
-
-          operation = replaceOnce(
-            operation,
-            `  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
-          `,
-            `  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
-            const [previewOpen, setPreviewOpen] = useState(false)
-            const [previewUrl, setPreviewUrl] = useState('')
-          `,
-            'preview state'
-          )
-
-          const oldPreview =
-          `    window.api.navByDefaultBrowser(
-              \`https://www.fideo.site/cn?streamUrl=\${encodeURIComponent(liveUrls[streamConfig.line])}\`
+          operation =
+            operation.replace(
+              `import Dialog from '@/components/Dialog'`,
+              `import Dialog from '@/components/Dialog'
+          import StreamPreviewDialog from '@/components/StreamPreviewDialog'`
             )
-          `
 
-          const newPreview =
-          `    const hlsUrl =
+          if (
+            !operation.includes(
+              'StreamPreviewDialog'
+            )
+          ) {
+            throw new Error(
+              'Preview import patch failed'
+            )
+          }
+
+          const statePattern =
+            /const\s+\[isLoadingPreview,\s*setIsLoadingPreview\]\s*=\s*useState\(false\)/
+
+          if (
+            !statePattern.test(
+              operation
+            )
+          ) {
+            throw new Error(
+              'Preview state marker not found'
+            )
+          }
+
+          operation =
+            operation.replace(
+              statePattern,
+              `const [isLoadingPreview, setIsLoadingPreview] = useState(false)
+            const [previewOpen, setPreviewOpen] = useState(false)
+            const [previewUrl, setPreviewUrl] = useState('')`
+            )
+
+          const externalPreviewPattern =
+            /window\.api\.navByDefaultBrowser\(\s*`https:\/\/www\.fideo\.site\/cn\?streamUrl=\$\{encodeURIComponent\(liveUrls\[streamConfig\.line\]\)\}`\s*\)/m
+
+          if (
+            !externalPreviewPattern.test(
+              operation
+            )
+          ) {
+            throw new Error(
+              'Old fideo.site preview block not found'
+            )
+          }
+
+          operation =
+            operation.replace(
+              externalPreviewPattern,
+              `const hlsUrl =
               liveUrls.find(
                 (url) =>
                   /\\\\.m3u8(?:\\\\?|$)/i.test(
@@ -696,11 +812,14 @@ jobs:
 
             if (!hlsUrl) {
               toast({
-                title: streamConfig.title,
-                description: t(
-                  'stream_config.preview_hls_unavailable'
-                ),
-                variant: 'destructive'
+                title:
+                  streamConfig.title,
+                description:
+                  t(
+                    'stream_config.preview_hls_unavailable'
+                  ),
+                variant:
+                  'destructive'
               })
 
               return
@@ -712,43 +831,53 @@ jobs:
 
             setPreviewOpen(
               true
+            )`
             )
-          `
 
-          operation = replaceOnce(
-            operation,
-            oldPreview,
-            newPreview,
-            'external preview URL'
-          )
+          const sheetMarker =
+            `      <StreamConfigSheet`
 
-          operation = replaceOnce(
-            operation,
-            `      <StreamConfigSheet
-          `,
-            `      <StreamPreviewDialog
+          if (
+            !operation.includes(
+              sheetMarker
+            )
+          ) {
+            throw new Error(
+              'StreamConfigSheet JSX marker not found'
+            )
+          }
+
+          operation =
+            operation.replace(
+              sheetMarker,
+              `      <StreamPreviewDialog
                 open={previewOpen}
-                onOpenChange={setPreviewOpen}
-                title={streamConfig.title}
+                onOpenChange={
+                  setPreviewOpen
+                }
+                title={
+                  streamConfig.title
+                }
                 url={previewUrl}
-                errorText={t(
-                  'stream_config.preview_failed'
-                )}
+                errorText={
+                  t(
+                    'stream_config.preview_failed'
+                  )
+                }
               />
 
-              <StreamConfigSheet
-          `,
-            'preview dialog render'
-          )
+              <StreamConfigSheet`
+            )
 
           write(
             operationPath,
             operation
           )
 
-          // ========================================================
-          // 5. Preview locale strings.
-          // ========================================================
+
+          // ======================================================
+          // 5. Locale
+          // ======================================================
 
           const localePath =
             'src/renderer/src/locales/locales.js'
@@ -756,49 +885,57 @@ jobs:
           let locale =
             read(localePath)
 
-          locale = replaceOnce(
-            locale,
-            `        preview: 'Preview Stream'
-          `,
-            `        preview: 'Preview Stream',
-                  preview_failed: 'Unable to play this live stream. Try again or choose another stream.',
-                  preview_hls_unavailable: 'No HLS stream is available for preview.'
-          `,
-            'English preview locale'
-          )
+          const enMarker =
+            `        preview: 'Preview Stream'`
 
-          locale = replaceOnce(
-            locale,
-            `        preview: '预览直播流'
-          `,
-            `        preview: '预览直播流',
-                  preview_failed: '当前直播流无法播放，请重试或更换线路',
-                  preview_hls_unavailable: '当前没有可用于预览的 HLS 直播流'
-          `,
-            'Chinese preview locale'
-          )
+          const cnMarker =
+            `        preview: '预览直播流'`
+
+          if (
+            !locale.includes(
+              enMarker
+            )
+          ) {
+            throw new Error(
+              'English preview locale not found'
+            )
+          }
+
+          if (
+            !locale.includes(
+              cnMarker
+            )
+          ) {
+            throw new Error(
+              'Chinese preview locale not found'
+            )
+          }
+
+          locale =
+            locale.replace(
+              enMarker,
+              `        preview: 'Preview Stream',
+                  preview_failed: 'Unable to play this live stream. Please try again.',
+                  preview_hls_unavailable: 'No HLS stream is available for preview.'`
+            )
+
+          locale =
+            locale.replace(
+              cnMarker,
+              `        preview: '预览直播流',
+                  preview_failed: '当前直播流无法播放，请稍后重试',
+                  preview_hls_unavailable: '当前没有可用于预览的 HLS 直播流'`
+            )
 
           write(
             localePath,
             locale
           )
 
-          // ========================================================
-          // 6. Version.
-          // ========================================================
 
-          const version =
-            process.env.APP_VERSION
-
-          if (
-            !/^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$/.test(
-              version
-            )
-          ) {
-            throw new Error(
-              `Invalid version: ${version}`
-            )
-          }
+          // ======================================================
+          // 6. Version
+          // ======================================================
 
           const packagePath =
             'package.json'
@@ -817,7 +954,7 @@ jobs:
               pkg,
               null,
               2
-            ) + '\\n'
+            ) + '\n'
           )
 
           const lockPath =
@@ -847,11 +984,88 @@ jobs:
               lock,
               null,
               2
-            ) + '\\n'
+            ) + '\n'
           )
 
+
+          // ======================================================
+          // 7. Final patch validation
+          // ======================================================
+
+          const finalDouyin =
+            read(douyinPath)
+
+          const finalRecord =
+            read(recordPath)
+
+          const finalMain =
+            read(mainPath)
+
+          const finalOperation =
+            read(operationPath)
+
+          if (
+            !finalDouyin.includes(
+              'getStreamBitrate'
+            )
+          ) {
+            throw new Error(
+              'Quality sorting was not installed'
+            )
+          }
+
+          if (
+            finalRecord.includes(
+              "inputOptions(['-re'])"
+            )
+          ) {
+            throw new Error(
+              '-re still exists'
+            )
+          }
+
+          if (
+            !finalRecord.includes(
+              '-reconnect_streamed 1'
+            )
+          ) {
+            throw new Error(
+              'Reconnect options missing'
+            )
+          }
+
+          if (
+            !finalMain.includes(
+              "streamConfig.line = '0'"
+            )
+          ) {
+            throw new Error(
+              'Highest-quality default missing'
+            )
+          }
+
+          if (
+            finalOperation.includes(
+              'www.fideo.site/cn?streamUrl='
+            )
+          ) {
+            throw new Error(
+              'Old preview URL still exists'
+            )
+          }
+
+          if (
+            !finalOperation.includes(
+              '<StreamPreviewDialog'
+            )
+          ) {
+            throw new Error(
+              'Internal preview dialog missing'
+            )
+          }
+
           console.log(
-            'V2.3 patch completed.'
+            'V2.3 source patch completed successfully.'
           )
           NODE
 
@@ -867,10 +1081,12 @@ jobs:
           node \
             "$RUNNER_TEMP/patch-v23.cjs"
 
-      - name: Verify required source changes
+      - name: Verify source files
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
+          echo "Checking Douyin quality sorting..."
+
           grep -q \
             "getStreamBitrate" \
             src/main/crawler/plugins/douyin.js
@@ -879,12 +1095,18 @@ jobs:
             "vbitrate" \
             src/main/crawler/plugins/douyin.js
 
+          echo "Checking FFmpeg..."
+
           grep -q \
             "reconnect_streamed" \
             src/main/ffmpeg/record.ts
 
-          if grep -q \
-            "inputOptions(\['-re'\])" \
+          grep -q \
+            "reconnect_delay_max" \
+            src/main/ffmpeg/record.ts
+
+          if grep -Fq \
+            "inputOptions(['-re'])" \
             src/main/ffmpeg/record.ts
           then
             echo \
@@ -892,14 +1114,7 @@ jobs:
             exit 1
           fi
 
-          if grep -q \
-            "www.fideo.site/cn?streamUrl" \
-            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
-          then
-            echo \
-              "ERROR: old fideo.site preview still exists"
-            exit 1
-          fi
+          echo "Checking preview..."
 
           grep -q \
             "StreamPreviewDialog" \
@@ -909,21 +1124,36 @@ jobs:
             "Hls.isSupported" \
             src/renderer/src/components/StreamPreviewDialog.tsx
 
+          if grep -Fq \
+            "www.fideo.site/cn?streamUrl=" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+          then
+            echo \
+              "ERROR: old fideo.site preview remains"
+            exit 1
+          fi
+
+          echo "Checking version..."
+
           node -e "
           const p = require('./package.json');
           if (p.version !== process.env.APP_VERSION) {
             console.error(
-              'Version mismatch:',
-              p.version,
-              process.env.APP_VERSION
+              'Expected',
+              process.env.APP_VERSION,
+              'but got',
+              p.version
             );
             process.exit(1);
           }
           console.log(
-            'Version OK:',
+            'Version:',
             p.version
           );
           "
+
+          echo \
+            "All V2.3 source checks passed."
 
       - name: TypeScript check
         run: |
@@ -955,7 +1185,7 @@ jobs:
             $env:EXPECTED_VERSION
           ) {
             throw `
-              "Version mismatch: expected $env:EXPECTED_VERSION, got $($package.version)"
+              "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
           }
 
           $installers =
@@ -969,6 +1199,9 @@ jobs:
             throw `
               "Windows x64 installer not generated."
           }
+
+          Write-Host `
+            "Generated installer:"
 
           $installers |
             Select-Object `
@@ -1032,13 +1265,13 @@ jobs:
             echo
             echo "Changes:"
             echo
-            echo "- Internal HLS live preview"
-            echo "- Removed dependency on www.fideo.site preview"
-            echo "- Douyin streams sorted by video bitrate"
+            echo "- Internal HLS preview"
+            echo "- Removed www.fideo.site preview dependency"
+            echo "- Douyin streams sorted by bitrate"
             echo "- Highest bitrate FLV preferred for recording"
-            echo "- Douyin recording defaults to sorted line 1"
+            echo "- Douyin recording automatically uses line 1 after sorting"
             echo "- Removed FFmpeg -re"
-            echo "- Added HTTP reconnect options"
-            echo "- Stream copy retained: no re-encoding and no quality loss"
+            echo "- Added network reconnect options"
+            echo "- Kept video/audio codec copy without re-encoding"
             echo "- Windows x64 test installer"
           } >> "$GITHUB_STEP_SUMMARY"
