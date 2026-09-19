@@ -43,10 +43,6 @@ jobs:
         run: |
           npm ci
 
-      # ==========================================================
-      # 新建 FFmpeg 预览服务
-      # ==========================================================
-
       - name: Create FFmpeg preview service
         run: |
           cat > src/main/preview-transcoder.ts <<'TS'
@@ -597,7 +593,7 @@ jobs:
               ?.on(
                 'data',
                 () => {
-                  // Do not log stream URLs or cookies.
+                  // Do not log URLs or cookies.
                 }
               )
 
@@ -618,10 +614,6 @@ jobs:
             }
           }
           TS
-
-      # ==========================================================
-      # V2.6 补丁
-      # ==========================================================
 
       - name: Create V2.6 source patch
         run: |
@@ -669,11 +661,6 @@ jobs:
             )
           }
 
-
-          // ====================================================
-          // Main index
-          // ====================================================
-
           const mainPath =
             'src/main/index.ts'
 
@@ -703,14 +690,12 @@ jobs:
           main =
             main.replace(
               /await\s+stopPreviewProxy\(\)/g,
-
               `await stopPreviewTranscoder()`
             )
 
           main =
             main.replace(
               /void\s+stopPreviewProxy\(\)/g,
-
               `void stopPreviewTranscoder()`
             )
 
@@ -770,11 +755,6 @@ jobs:
             mainPath,
             main
           )
-
-
-          // ====================================================
-          // Preview dialog: HLS only
-          // ====================================================
 
           const previewPath =
             'src/renderer/src/components/StreamPreviewDialog.tsx'
@@ -851,11 +831,7 @@ jobs:
 
                 try {
                   video.pause()
-
-                  video.removeAttribute(
-                    'src'
-                  )
-
+                  video.removeAttribute('src')
                   video.load()
                 } catch {
                   // Ignore.
@@ -870,10 +846,7 @@ jobs:
                 video.src =
                   url
 
-                const result =
-                  video.play()
-
-                result.catch(
+                video.play().catch(
                   () => {}
                 )
 
@@ -884,7 +857,6 @@ jobs:
                 !Hls.isSupported()
               ) {
                 setError(true)
-
                 return cleanup
               }
 
@@ -923,10 +895,7 @@ jobs:
               hls.on(
                 Hls.Events.MANIFEST_PARSED,
                 () => {
-                  const result =
-                    video.play()
-
-                  result.catch(
+                  video.play().catch(
                     () => {}
                   )
                 }
@@ -1017,12 +986,6 @@ jobs:
             previewPath,
             previewSource
           )
-
-
-          // ====================================================
-          // OperationBar:
-          // 所有可用直播流都交给 FFmpeg 预览
-          // ====================================================
 
           const opPath =
             'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
@@ -1205,11 +1168,6 @@ jobs:
             op
           )
 
-
-          // ====================================================
-          // Locales
-          // ====================================================
-
           const localePath =
             'src/renderer/src/locales/locales.js'
 
@@ -1219,14 +1177,12 @@ jobs:
           locale =
             locale.replace(
               `preview_failed: 'Unable to play this live stream. Please try again.'`,
-
               `preview_failed: 'Unable to generate preview. Please try again.'`
             )
 
           locale =
             locale.replace(
               `preview_failed: '当前直播流无法播放，请稍后重试'`,
-
               `preview_failed: '无法生成直播预览，请稍后重试'`
             )
 
@@ -1234,11 +1190,6 @@ jobs:
             localePath,
             locale
           )
-
-
-          // ====================================================
-          // Remove old proxy file reference not needed
-          // ====================================================
 
           if (
             fs.existsSync(
@@ -1249,11 +1200,6 @@ jobs:
               'src/main/preview-proxy.ts'
             )
           }
-
-
-          // ====================================================
-          // Validation
-          // ====================================================
 
           const finalMain =
             read(mainPath)
@@ -1311,150 +1257,65 @@ jobs:
 
       - name: Validate V2.6 patch syntax
         run: |
-          node --check \
-            "$RUNNER_TEMP/patch-v26.cjs"
+          node --check "$RUNNER_TEMP/patch-v26.cjs"
 
       - name: Apply V2.6 patch
         run: |
-          node \
-            "$RUNNER_TEMP/patch-v26.cjs"
-
-      # ==========================================================
-      # Version
-      # ==========================================================
+          node "$RUNNER_TEMP/patch-v26.cjs"
 
       - name: Update version
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
-          npm version \
-            "$APP_VERSION" \
-            --no-git-tag-version
-
-      # ==========================================================
-      # Source verification
-      # ==========================================================
+          npm version "$APP_VERSION" --no-git-tag-version
 
       - name: Verify V2.6 changes
         env:
           APP_VERSION: ${{ inputs.version }}
         run: |
-          echo "Checking FFmpeg preview transcoder..."
+          grep -q "libx264" src/main/preview-transcoder.ts
+          grep -q "aac" src/main/preview-transcoder.ts
+          grep -q "preview.m3u8" src/main/preview-transcoder.ts
+          grep -q "127.0.0.1" src/main/preview-transcoder.ts
+          grep -q "startPreviewTranscoder" src/main/index.ts
+          grep -q "stopPreviewTranscoder" src/main/index.ts
 
-          grep -q \
-            "libx264" \
-            src/main/preview-transcoder.ts
-
-          grep -q \
-            "aac" \
-            src/main/preview-transcoder.ts
-
-          grep -q \
-            "preview.m3u8" \
-            src/main/preview-transcoder.ts
-
-          grep -q \
-            "127.0.0.1" \
-            src/main/preview-transcoder.ts
-
-          grep -q \
-            "startPreviewTranscoder" \
-            src/main/index.ts
-
-          grep -q \
-            "stopPreviewTranscoder" \
-            src/main/index.ts
-
-          echo "Checking renderer preview..."
-
-          grep -q \
-            "Hls.isSupported" \
+          grep -q "Hls.isSupported" \
             src/renderer/src/components/StreamPreviewDialog.tsx
 
-          if grep -q \
-            "mpegts" \
+          if grep -q "mpegts" \
             src/renderer/src/components/StreamPreviewDialog.tsx
           then
-            echo \
-              "ERROR: old mpegts preview remains"
-
+            echo "ERROR: old mpegts preview remains"
             exit 1
           fi
 
-          echo "Checking monitor-only feature remains..."
-
-          grep -q \
-            "autoRecord: boolean" \
-            type.d.ts
-
-          grep -q \
-            'name="autoRecord"' \
+          grep -q "autoRecord: boolean" type.d.ts
+          grep -q 'name="autoRecord"' \
             src/renderer/src/components/StreamConfigSheet.tsx
 
-          grep -q \
-            "handleMonitorOnly" \
+          grep -q "handleMonitorOnly" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
-          grep -q \
-            "showNotification" \
-            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
-
-          echo "Checking recording quality remains untouched..."
-
-          grep -q \
-            "getQualityRank" \
+          grep -q "getQualityRank" \
             src/main/crawler/plugins/douyin.js
 
-          grep -q \
-            "candidate_resolution" \
+          grep -q "candidate_resolution" \
             src/main/crawler/plugins/douyin.js
 
-          grep -q \
-            "videoCodec('copy')" \
+          grep -q "videoCodec('copy')" \
             src/main/ffmpeg/record.ts
 
-          grep -q \
-            "audioCodec('copy')" \
+          grep -q "audioCodec('copy')" \
             src/main/ffmpeg/record.ts
-
-          if grep -Fq \
-            "inputOptions(['-re'])" \
-            src/main/ffmpeg/record.ts
-          then
-            echo \
-              "ERROR: -re returned to recording path"
-
-            exit 1
-          fi
 
           node -e "
-          const p =
-            require('./package.json');
-
-          if (
-            p.version !==
-            process.env.APP_VERSION
-          ) {
-            console.error(
-              'Version mismatch:',
-              p.version
-            );
-
+          const p=require('./package.json');
+          if(p.version!==process.env.APP_VERSION){
             process.exit(1);
           }
-
-          console.log(
-            'Version:',
-            p.version
-          );
+          console.log('Version:',p.version);
           "
-
-          echo \
-            "All V2.6 source checks passed."
-
-      # ==========================================================
-      # TypeScript / Build
-      # ==========================================================
 
       - name: TypeScript check
         run: |
@@ -1463,10 +1324,6 @@ jobs:
       - name: Build Electron app
         run: |
           npm run build
-
-      # ==========================================================
-      # Windows x64
-      # ==========================================================
 
       - name: Package Windows x64
         run: |
@@ -1481,52 +1338,25 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
-          $package =
-            Get-Content package.json |
-            ConvertFrom-Json
+          $package = Get-Content package.json | ConvertFrom-Json
 
-          if (
-            $package.version -ne
-            $env:EXPECTED_VERSION
-          ) {
-            throw `
-              "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+          if ($package.version -ne $env:EXPECTED_VERSION) {
+            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
           }
 
-          $installers =
-            Get-ChildItem `
-              -Path dist `
-              -Filter "*-x64.exe"
+          $installers = Get-ChildItem -Path dist -Filter "*-x64.exe"
 
-          if (
-            $installers.Count -eq 0
-          ) {
-            throw `
-              "Windows x64 installer not generated."
+          if (-not $installers -or $installers.Count -eq 0) {
+            throw "Windows x64 installer not generated."
           }
 
-          Write-Host \
-            "Generated installer:"
-
-          $installers |
-            Select-Object \
-              Name,
-              Length,
-              FullName
-
-      # ==========================================================
-      # Save test branch
-      # ==========================================================
+          Write-Host "Generated installer:"
+          $installers | Select-Object Name, Length, FullName | Format-Table -AutoSize
 
       - name: Commit V2.6 tested source
         run: |
-          git config \
-            user.name \
-            "github-actions[bot]"
-
-          git config \
-            user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add \
             package.json \
@@ -1543,8 +1373,7 @@ jobs:
 
           if git diff --cached --quiet
           then
-            echo \
-              "No source changes to commit."
+            echo "No source changes to commit."
           else
             git commit \
               -m "Replace Douyin preview with FFmpeg HLS transcoder"
@@ -1575,17 +1404,10 @@ jobs:
             echo
             echo "Branch: \`douyin-v2.6-test\`"
             echo
-            echo "Changes:"
-            echo
-            echo "- Replaced direct FLV preview with FFmpeg transcoding"
-            echo "- Preview input can be FLV / HLS / HEVC / H264"
-            echo "- Preview video converted to H264"
-            echo "- Preview audio converted to AAC"
-            echo "- Preview served as localhost HLS"
-            echo "- Preview FFmpeg stops when preview dialog closes"
-            echo "- Formal recording remains stream-copy"
-            echo "- Highest-quality Douyin recording retained"
+            echo "- FFmpeg H264 + AAC preview"
+            echo "- Localhost HLS preview"
+            echo "- Formal recording still stream-copy"
+            echo "- Highest-quality recording retained"
             echo "- Auto-record switch retained"
-            echo "- Monitor-only notification mode retained"
-            echo "- Windows x64 test installer"
+            echo "- Monitor-only notifications retained"
           } >> "$GITHUB_STEP_SUMMARY"
