@@ -6,7 +6,6 @@ import UseThemeIcon from '@/components/UseThemeIcon'
 import StreamConfigSheet from '@/components/StreamConfigSheet'
 
 import DefaultSettingSheet from './components/DefaultSettingSheet'
-import WebControlSettingSheet from './components/WebControlSettingSheet'
 
 import darkAddIcon from '@/assets/images/dark/add.svg'
 import lightAddIcon from '@/assets/images/light/add.svg'
@@ -18,8 +17,6 @@ import darkQQIcon from '@/assets/images/dark/qq.svg'
 import lightQQIcon from '@/assets/images/light/qq.svg'
 import darkDiscordIcon from '@/assets/images/dark/discord.svg'
 import lightDiscordIcon from '@/assets/images/light/discord.svg'
-import darkPhoneIcon from '@/assets/images/dark/phone.svg'
-import lightPhoneIcon from '@/assets/images/light/phone.svg'
 
 import {
   Select,
@@ -42,9 +39,6 @@ export default function NavBar() {
 
   const [createSheetOpen, setCreateSheetOpen] = useState(false)
   const [settingSheetOpen, setSettingSheetOpen] = useState(false)
-  //
-  const [webControlSheetOpen, setWebControlSheetOpen] = useState(false)
-
   const handleLogoClick = () => {
     window.api.navByDefaultBrowser('https://www.fideo.site')
   }
@@ -84,13 +78,6 @@ export default function NavBar() {
           tooltipContent={t('nav_bar.discord')}
         />
 
-        <UseThemeIcon
-          dark={darkPhoneIcon}
-          light={lightPhoneIcon}
-          className="w-[22px] h-[22px] cursor-pointer select-none"
-          tooltipContent={t('nav_bar.web_control')}
-          handleClick={() => setWebControlSheetOpen(true)}
-        />
       </div>
 
       <div className="flex items-center gap-[12px]">
@@ -140,10 +127,6 @@ export default function NavBar() {
 
       <DefaultSettingSheet setSheetOpen={setSettingSheetOpen} sheetOpen={settingSheetOpen} />
 
-      <WebControlSettingSheet
-        setSheetOpen={setWebControlSheetOpen}
-        sheetOpen={webControlSheetOpen}
-      />
     </div>
   )
 }

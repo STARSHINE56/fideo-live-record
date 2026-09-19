@@ -21,7 +21,10 @@ import {
   STOP_FRPC_PROCESS,
   STOP_STREAM_RECORD,
   STREAM_RECORD_END,
-  USER_CLOSE_WINDOW
+  USER_CLOSE_WINDOW,
+  DOUYIN_LOGIN,
+  DOUYIN_LOGOUT,
+  DOUYIN_LOGIN_STATUS
 } from '../const'
 
 // Custom APIs for renderer
@@ -44,7 +47,19 @@ const api = {
   maxRestoreWindow: () => ipcRenderer.invoke(MAXIMIZE_RESTORE_WINDOW),
   closeWindow: () => ipcRenderer.invoke(CLOSE_WINDOW),
   forceCloseWindow: () => ipcRenderer.invoke(FORCE_CLOSE_WINDOW),
-  retryDownloadDep: () => ipcRenderer.invoke(RETRY_DOWNLOAD_DEP),
+  retryDownloadDep: () =>
+    ipcRenderer.invoke(RETRY_DOWNLOAD_DEP),
+
+  loginDouyin: () =>
+    ipcRenderer.invoke(DOUYIN_LOGIN),
+
+  logoutDouyin: () =>
+    ipcRenderer.invoke(DOUYIN_LOGOUT),
+
+  getDouyinLoginStatus: () =>
+    ipcRenderer.invoke(
+      DOUYIN_LOGIN_STATUS
+    ),
 
   startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),
   stopFrpcProcess: () => ipcRenderer.invoke(STOP_FRPC_PROCESS),

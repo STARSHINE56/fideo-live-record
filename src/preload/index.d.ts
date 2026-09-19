@@ -29,6 +29,21 @@ declare global {
       forceCloseWindow: () => void
       retryDownloadDep: () => void
 
+      loginDouyin: () => Promise<{
+        hasSession: boolean
+        cookieCount: number
+      }>
+
+      logoutDouyin: () => Promise<{
+        hasSession: boolean
+        cookieCount: number
+      }>
+
+      getDouyinLoginStatus: () => Promise<{
+        hasSession: boolean
+        cookieCount: number
+      }>
+
       startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>
       stopFrpcProcess: () => void
 

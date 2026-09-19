@@ -9,7 +9,7 @@ import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/sha
 import { Input } from '@/shadcn/ui/input'
 import { Select, SelectTrigger, SelectItem, SelectContent, SelectValue } from '@/shadcn/ui/select'
 import { useDefaultSettingsStore } from '@renderer/store/useDefaultSettingsStore'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 const formSchema = z.object({
   directory: z.string(),
@@ -27,6 +27,11 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
   const { t } = useTranslation()
   const { sheetOpen, setSheetOpen } = props
 
+  const [
+    douyinLoggedIn,
+    setDouyinLoggedIn
+  ] = useState(false)
+
   const { defaultSettingsConfig, setDefaultSettingsConfig } = useDefaultSettingsStore(
     (state) => state
   )
@@ -39,8 +44,41 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
   })
 
   useEffect(() => {
-    form.reset({ ...defaultSettingsConfig })
+    form.reset({
+      ...defaultSettingsConfig
+    })
   }, [defaultSettingsConfig])
+
+  useEffect(() => {
+    if (!sheetOpen) {
+      return
+    }
+
+    window.api
+      .getDouyinLoginStatus()
+      .then(({ hasSession }) => {
+        setDouyinLoggedIn(
+          hasSession
+        )
+      })
+  }, [sheetOpen])
+
+  const handleDouyinLogin =
+    async () => {
+      const { hasSession } =
+        await window.api.loginDouyin()
+
+      setDouyinLoggedIn(
+        hasSession
+      )
+    }
+
+  const handleDouyinLogout =
+    async () => {
+      await window.api.logoutDouyin()
+
+      setDouyinLoggedIn(false)
+    }
 
   const handleSelectDir = async () => {
     const { canceled, filePaths } = await window.api.selectDir()
@@ -116,6 +154,56 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
                     </FormItem>
                   )}
                 />
+                <div className="space-y-2">
+                  <FormLabel>
+                    {t(
+                      'default_settings.douyin_account'
+                    )}
+                  </FormLabel>
+
+                  <div className="flex gap-2">
+                    <Input
+                      value={
+                        douyinLoggedIn
+                          ? t(
+                              'default_settings.douyin_logged_in'
+                            )
+                          : t(
+                              'default_settings.douyin_not_logged_in'
+                            )
+                      }
+                      disabled
+                      readOnly
+                    />
+
+                    <Button
+                      variant="outline"
+                      type="button"
+                      onClick={
+                        handleDouyinLogin
+                      }
+                    >
+                      {t(
+                        'default_settings.douyin_login'
+                      )}
+                    </Button>
+
+                    {douyinLoggedIn && (
+                      <Button
+                        variant="outline"
+                        type="button"
+                        onClick={
+                          handleDouyinLogout
+                        }
+                      >
+                        {t(
+                          'default_settings.douyin_logout'
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
                 <FormField
                   control={form.control}
                   name="xizhiKey"

@@ -19,7 +19,12 @@ export default {
         xizhi_key: 'Xizhi API Key (For WeChat Push)',
         xizhi_key_placeholder: 'Please enter the Xizhi API Key',
         logs_dir: 'Logs Directory',
-        logs_dir_placeholder: 'Open Logs Directory'
+        logs_dir_placeholder: 'Open Logs Directory',
+        douyin_account: 'Douyin Account',
+        douyin_login: 'Login to Douyin',
+        douyin_logout: 'Logout',
+        douyin_logged_in: 'Douyin session is available',
+        douyin_not_logged_in: 'Not logged in'
       },
       web_control_setting: {
         title: 'Web Control Settings',
@@ -209,7 +214,12 @@ export default {
         xizhi_key: '息知API Key(用于微信推送)',
         xizhi_key_placeholder: '请输入息知API Key',
         logs_dir: '日志目录',
-        logs_dir_placeholder: '打开日志目录'
+        logs_dir_placeholder: '打开日志目录',
+        douyin_account: '抖音账号',
+        douyin_login: '登录抖音',
+        douyin_logout: '退出登录',
+        douyin_logged_in: '抖音登录会话可用',
+        douyin_not_logged_in: '未登录'
       },
       stream_config: {
         confirm: '确认',

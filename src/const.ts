@@ -31,6 +31,10 @@ export const STOP_FRPC_PROCESS = 'STOP_FRPC_PROCESS'
 
 export const FRPC_PROCESS_ERROR = 'FRPC_PROCESS_ERROR'
 
+export const DOUYIN_LOGIN = 'DOUYIN_LOGIN'
+export const DOUYIN_LOGOUT = 'DOUYIN_LOGOUT'
+export const DOUYIN_LOGIN_STATUS = 'DOUYIN_LOGIN_STATUS'
+
 export const FRP_DOMAIN = 'web-control.fideo.site'
 export const API_DOMAIN = 'api-web-control.fideo.site'
 

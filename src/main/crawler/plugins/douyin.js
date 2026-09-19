@@ -61,7 +61,7 @@ async function getDesktopData(roomUrl, others = {}) {
 async function baseGetMobileDouYinLiveUrlsPlugin(roomUrl, others = {}) {
   const { proxy, cookie } = others
 
-  log('roomUrl:', roomUrl, 'cookie:', cookie, 'proxy:', proxy)
+  log('roomUrl:', roomUrl, 'proxy:', proxy)
 
   const data = await getMobileData(roomUrl, others)
 
@@ -97,7 +97,7 @@ async function baseGetDesktopDouYinLiveUrlsPlugin(roomUrl, others = {}) {
   const roomId = new URL(roomUrl).pathname.split('/')[1]
   const { proxy, cookie } = others
 
-  log('roomId:', roomId, 'cookie:', cookie, 'proxy:', proxy)
+  log('roomId:', roomId, 'proxy:', proxy)
 
   const data = await getDesktopData(roomUrl, others)
 

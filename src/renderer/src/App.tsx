@@ -140,7 +140,7 @@ function App(): JSX.Element {
         btnText={t('app_update.get_update_detail')}
         handleBtnClick={() =>
           window.api.navByDefaultBrowser(
-            'https://github.com/chenfan0/fideo-live-record/releases/latest'
+            'https://github.com/STARSHINE56/fideo-live-record/releases/latest'
           )
         }
       />

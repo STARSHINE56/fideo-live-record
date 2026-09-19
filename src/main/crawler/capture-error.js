@@ -13,8 +13,13 @@ export function captureError(fn) {
     const writeLog = args[args.length - 1]
     const realArgs = args.slice(0, args.length - 1)
     try {
-      const res = await fn.apply(this, realArgs)
-      writeLog(`Fetch Res: ${JSON.stringify(res, null, 2)}`)
+      const res = await fn.apply(
+      this,
+      realArgs
+    )
+
+      writeLog('Fetch Success')
+
       return res
     } catch (e) {
       const message = e.message

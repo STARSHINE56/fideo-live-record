@@ -37,8 +37,9 @@ import {
   STOP_STREAM_RECORD,
   STREAM_RECORD_END,
   USER_CLOSE_WINDOW,
-
-  API_DOMAIN
+  DOUYIN_LOGIN,
+  DOUYIN_LOGOUT,
+  DOUYIN_LOGIN_STATUS
 } from '../const'
 import { getLiveUrls, getRoomInfo } from './crawler/index'
 import { FFMPEG_ERROR_CODE, SUCCESS_CODE } from '../code'
@@ -60,18 +61,64 @@ import {
 
 import { writeLogWrapper } from './log/index'
 import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
+import {
+  clearDouyinLogin,
+  getDouyinCookie,
+  getDouyinLoginStatus,
+  isDouyinUrl,
+  openDouyinLoginWindow
+} from './douyin-session'
 
 export const writeLog = writeLogWrapper(app.getPath('userData'))
 
+async function getEffectiveCookie(
+  roomUrl: string,
+  cookie?: string
+) {
+  if (
+    cookie ||
+    !isDouyinUrl(roomUrl)
+  ) {
+    return cookie
+  }
+
+  const sessionCookie =
+    await getDouyinCookie()
+
+  return sessionCookie || undefined
+}
+
 async function checkUpdate() {
   try {
-    const json = await fetch(`https://${API_DOMAIN}/api/release`)
-    const { tag_name } = await json.json()
-    if (lt(pkg.version, tag_name)) {
-      win?.webContents.send(SHOW_UPDATE_DIALOG)
+    const response = await fetch(
+      'https://api.github.com/repos/STARSHINE56/fideo-live-record/releases/latest',
+      {
+        headers: {
+          Accept: 'application/vnd.github+json'
+        }
+      }
+    )
+
+    if (!response.ok) {
+      return
+    }
+
+    const { tag_name } = await response.json()
+
+    if (!tag_name) {
+      return
+    }
+
+    const latestVersion =
+      String(tag_name).replace(/^v/, '')
+
+    if (lt(pkg.version, latestVersion)) {
+      win?.webContents.send(
+        SHOW_UPDATE_DIALOG
+      )
     }
   } catch {
-    // ignore
+    // Update check must not affect recording.
   }
 }
 
@@ -275,7 +322,21 @@ app.whenReady().then(async () => {
     GET_LIVE_URLS,
     async (_, info: { roomUrl: string; proxy?: string; cookie?: string; title: string }) => {
       const { roomUrl, proxy, cookie, title } = info
-      return getLiveUrls({ roomUrl, proxy, cookie }, writeLog.bind(null, title))
+
+      const effectiveCookie =
+        await getEffectiveCookie(
+          roomUrl,
+          cookie
+        )
+
+      return getLiveUrls(
+        {
+          roomUrl,
+          proxy,
+          cookie: effectiveCookie
+        },
+        writeLog.bind(null, title)
+      )
     }
   )
 
@@ -283,7 +344,24 @@ app.whenReady().then(async () => {
     GET_ROOM_INFO,
     async (_, info: { roomUrl: string; proxy?: string; cookie?: string }) => {
       const { roomUrl, proxy, cookie } = info
-      return getRoomInfo({ roomUrl, proxy, cookie }, writeLog.bind(null, 'Get Room Info'))
+
+      const effectiveCookie =
+        await getEffectiveCookie(
+          roomUrl,
+          cookie
+        )
+
+      return getRoomInfo(
+        {
+          roomUrl,
+          proxy,
+          cookie: effectiveCookie
+        },
+        writeLog.bind(
+          null,
+          'Get Room Info'
+        )
+      )
     }
   )
 
@@ -293,7 +371,19 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(START_STREAM_RECORD, async (_, streamConfigStr: string) => {
     const streamConfig = JSON.parse(streamConfigStr) as IStreamConfig
-    const { roomUrl, proxy, cookie, title, id } = streamConfig
+    const {
+    roomUrl,
+    proxy,
+    cookie,
+    title,
+    id
+  } = streamConfig
+
+    const effectiveCookie =
+      await getEffectiveCookie(
+        roomUrl,
+        cookie
+      )
 
     /**
      * When requesting the live stream address,
@@ -304,10 +394,17 @@ app.whenReady().then(async () => {
      */
     setRecordStreamFfmpegProcessMap(id, RECORD_DUMMY_PROCESS)
 
-    const { code: liveUrlsCode, liveUrls } = await getLiveUrls(
-      { roomUrl, proxy, cookie },
-      writeLog.bind(null, title)
-    )
+    const {
+    code: liveUrlsCode,
+    liveUrls
+  } = await getLiveUrls(
+    {
+      roomUrl,
+      proxy,
+      cookie: effectiveCookie
+    },
+    writeLog.bind(null, title)
+  )
 
     if (liveUrlsCode !== SUCCESS_CODE) {
       return {
@@ -355,8 +452,34 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle(OPEN_LOGS_DIR, () => {
-    shell.openPath(resolve(app.getPath('userData'), 'logs'))
+    shell.openPath(
+      resolve(
+        app.getPath('userData'),
+        'logs'
+      )
+    )
   })
+
+  ipcMain.handle(
+    DOUYIN_LOGIN,
+    async () => {
+      return await openDouyinLoginWindow()
+    }
+  )
+
+  ipcMain.handle(
+    DOUYIN_LOGIN_STATUS,
+    async () => {
+      return await getDouyinLoginStatus()
+    }
+  )
+
+  ipcMain.handle(
+    DOUYIN_LOGOUT,
+    async () => {
+      return await clearDouyinLogin()
+    }
+  )
 
   ipcMain.handle(MINIMIZE_WINDOW, () => {
     win?.minimize()
