@@ -1,3 +1,13 @@
+/*
+ * Portions adapted from ihmily/streamget
+ * https://github.com/ihmily/streamget
+ *
+ * Copyright (c) 2025 Hmily
+ * Licensed under the MIT License.
+ *
+ * See THIRD_PARTY_NOTICES.md for full license text.
+ */
+
 function leftRotate(x, n) {
   n %= 32
   return ((x << n) | (x >>> (32 - n))) >>> 0
