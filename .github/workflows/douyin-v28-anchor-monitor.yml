@@ -23,10 +23,6 @@ jobs:
         shell: bash
 
     steps:
-      # ============================================================
-      # 基于已经成功的 V2.7
-      # ============================================================
-
       - name: Checkout V2.7
         uses: actions/checkout@v4
         with:
@@ -49,7 +45,6 @@ jobs:
 
       # ============================================================
       # 1. 让 crawler 接受抖音主播主页
-      # 不再使用整段字符串匹配
       # ============================================================
 
       - name: Add Douyin profile hosts
@@ -141,12 +136,9 @@ jobs:
             ...block
           )
 
-          text =
-            lines.join('\n')
-
           fs.writeFileSync(
             path,
-            text,
+            lines.join('\n'),
             'utf8'
           )
 
@@ -156,15 +148,7 @@ jobs:
           NODE
 
       # ============================================================
-      # 2. 抖音主播主页解析
-      #
-      # 主播离线：
-      #   主页 URL -> sec_uid -> 查询用户 -> NOT_URLS
-      #
-      # 主播开播：
-      #   主页 URL -> sec_uid -> web_rid
-      #   -> live.douyin.com/web_rid
-      #   -> 继续使用 V2.7 直播流解析
+      # 2. 增加主播主页解析
       # ============================================================
 
       - name: Add Douyin anchor monitor parser
@@ -181,8 +165,25 @@ jobs:
               'utf8'
             )
 
+          # ========================================================
+          # 这里下面是 JS，不是 bash
+          # ========================================================
+          NODE
+
+          cat > "$RUNNER_TEMP/patch-douyin.cjs" <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/main/crawler/plugins/douyin.js'
+
+          let text =
+            fs.readFileSync(
+              path,
+              'utf8'
+            )
+
           // ========================================================
-          // 插入主播主页相关 helper
+          // helper
           // ========================================================
 
           if (
@@ -193,13 +194,13 @@ jobs:
             const marker =
               'async function getDesktopRoomWithFallback('
 
-            const markerIndex =
+            const index =
               text.indexOf(
                 marker
               )
 
             if (
-              markerIndex < 0
+              index < 0
             ) {
               throw new Error(
                 'getDesktopRoomWithFallback not found'
@@ -221,10 +222,8 @@ jobs:
                   .toLowerCase()
 
               if (
-                host !==
-                  'www.douyin.com' &&
-                host !==
-                  'douyin.com'
+                host !== 'www.douyin.com' &&
+                host !== 'douyin.com'
               ) {
                 return ''
               }
@@ -235,9 +234,8 @@ jobs:
                   .filter(Boolean)
 
               if (
-                parts.length < 2 ||
-                parts[0] !==
-                  'user'
+                parts[0] !== 'user' ||
+                !parts[1]
               ) {
                 return ''
               }
@@ -299,15 +297,15 @@ jobs:
             for (
               const key of keys
             ) {
+              const result =
+                value[key]
+
               if (
-                value[key] !==
-                  undefined &&
-                value[key] !==
-                  null &&
-                value[key] !==
-                  ''
+                result !== undefined &&
+                result !== null &&
+                result !== ''
               ) {
-                return value[key]
+                return result
               }
             }
 
@@ -325,7 +323,7 @@ jobs:
                 continue
               }
 
-              const result =
+              const found =
                 findDouyinNestedValue(
                   child,
                   keys,
@@ -333,10 +331,9 @@ jobs:
                 )
 
               if (
-                result !==
-                undefined
+                found !== undefined
               ) {
-                return result
+                return found
               }
             }
 
@@ -477,8 +474,7 @@ jobs:
                   bootstrap
                 )
             } catch {
-              // Login cookie may
-              // already be available.
+              // Ignore bootstrap failure.
             }
 
             const finalCookie = [
@@ -571,37 +567,31 @@ jobs:
               ) ||
               ''
 
-            const rawLiveStatus =
-              user?.live_status ??
-              user?.liveStatus ??
-              findDouyinNestedValue(
-                user,
-                [
-                  'live_status',
-                  'liveStatus'
-                ]
-              ) ??
-              0
-
-            const rawRoomStatus =
-              roomData?.status ??
-              roomData?.room?.status ??
-              findDouyinNestedValue(
-                roomData,
-                [
-                  'status'
-                ]
-              ) ??
-              0
-
             const liveStatus =
               Number(
-                rawLiveStatus
+                user?.live_status ??
+                user?.liveStatus ??
+                findDouyinNestedValue(
+                  user,
+                  [
+                    'live_status',
+                    'liveStatus'
+                  ]
+                ) ??
+                0
               )
 
             const roomStatus =
               Number(
-                rawRoomStatus
+                roomData?.status ??
+                roomData?.room?.status ??
+                findDouyinNestedValue(
+                  roomData,
+                  [
+                    'status'
+                  ]
+                ) ??
+                0
               )
 
             const rawWebRid =
@@ -675,7 +665,7 @@ jobs:
 
             if (
               parsed.hostname ===
-                'v.douyin.com'
+              'v.douyin.com'
             ) {
               const response =
                 await request(
@@ -698,16 +688,10 @@ jobs:
                   ?.responseUrl ||
                 currentUrl
 
-              try {
-                parsed =
-                  new URL(
-                    currentUrl
-                  )
-              } catch {
-                throw new Error(
-                  'DOUYIN_INVALID_REDIRECT_URL'
+              parsed =
+                new URL(
+                  currentUrl
                 )
-              }
             }
 
             const secUid =
@@ -786,16 +770,21 @@ jobs:
             text =
               text.slice(
                 0,
-                markerIndex
+                index
               ) +
               helper +
               text.slice(
-                markerIndex
+                index
               )
           }
 
           // ========================================================
-          // 替换 getLiveUrls 主入口
+          // 正确替换 baseGetDouYinLiveUrlsPlugin
+          //
+          // 实际源码顺序：
+          // baseGetMobileDouYinLiveUrlsPlugin
+          // baseGetDouYinLiveUrlsPlugin
+          // baseGetDouYinRoomInfoPlugin
           // ========================================================
 
           {
@@ -806,7 +795,7 @@ jobs:
 
             const end =
               text.indexOf(
-                'async function baseGetMobileDouYinLiveUrlsPlugin(',
+                'async function baseGetDouYinRoomInfoPlugin(',
                 start
               )
 
@@ -815,7 +804,7 @@ jobs:
               end <= start
             ) {
               throw new Error(
-                'Douyin live URL function boundary not found'
+                'baseGetDouYinLiveUrlsPlugin boundary not found'
               )
             }
 
@@ -877,8 +866,7 @@ jobs:
           }
 
           // ========================================================
-          // 替换 getRoomInfo
-          // 离线主播仍可返回昵称
+          // 替换 room info
           // ========================================================
 
           {
@@ -898,7 +886,7 @@ jobs:
               end <= start
             ) {
               throw new Error(
-                'Douyin room info function boundary not found'
+                'baseGetDouYinRoomInfoPlugin boundary not found'
               )
             }
 
@@ -976,20 +964,17 @@ jobs:
           )
 
           console.log(
-            'Douyin anchor monitor parser added.'
+            'Douyin V2.8 anchor parser patched.'
           )
           NODE
 
+          node "$RUNNER_TEMP/patch-douyin.cjs"
+
       # ============================================================
       # 3. 修改界面文案
-      #
-      # 不动线路 Select 逻辑。
-      # 主播离线时直接保存即可。
-      # 默认 line=0 / liveUrls=[]。
-      # 开始监控以后动态查询。
       # ============================================================
 
-      - name: Update Douyin profile UI text
+      - name: Update UI text
         run: |
           node <<'NODE'
           const fs = require('fs')
@@ -1058,7 +1043,7 @@ jobs:
           )
 
           console.log(
-            'Douyin profile UI text updated.'
+            'UI text updated.'
           )
           NODE
 
@@ -1075,7 +1060,7 @@ jobs:
             --no-git-tag-version
 
       # ============================================================
-      # 5. 确认主播主页支持确实加入
+      # 5. V2.8 检查
       # ============================================================
 
       - name: Verify anchor monitor source
@@ -1117,13 +1102,13 @@ jobs:
             src/renderer/src/locales/locales.js
 
           echo \
-            "Anchor monitor source verification passed."
+            "V2.8 anchor monitor source exists."
 
       # ============================================================
-      # 6. 确认 V2.7 原有核心功能没有被破坏
+      # 6. 保留 V2.7 核心
       # ============================================================
 
-      - name: Verify V2.7 core retained
+      - name: Verify V2.7 core
         run: |
           grep -q \
             "handleMonitorOnly" \
@@ -1153,10 +1138,10 @@ jobs:
             "V2.7 recording core retained."
 
       # ============================================================
-      # 7. 确认预览功能没有回来
+      # 7. 预览必须继续不存在
       # ============================================================
 
-      - name: Verify preview remains removed
+      - name: Verify preview removed
         run: |
           LEFTOVERS="$(
             grep -R \
@@ -1170,10 +1155,6 @@ jobs:
           if [ -n "$LEFTOVERS" ]
           then
             echo "$LEFTOVERS"
-
-            echo \
-              "Preview code unexpectedly returned."
-
             exit 1
           fi
 
@@ -1189,7 +1170,7 @@ jobs:
           npm run typecheck
 
       # ============================================================
-      # 9. Electron Build
+      # 9. Build
       # ============================================================
 
       - name: Build Electron
@@ -1208,7 +1189,7 @@ jobs:
             --x64 \
             --publish never
 
-      - name: Verify Windows installer
+      - name: Verify installer
         shell: pwsh
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -1221,7 +1202,7 @@ jobs:
             $package.version -ne
             $env:EXPECTED_VERSION
           ) {
-            throw "Version mismatch. Expected $env:EXPECTED_VERSION, got $($package.version)"
+            throw "Version mismatch"
           }
 
           $installers =
@@ -1234,11 +1215,8 @@ jobs:
             $installers.Count -eq 0
           ) {
             throw \
-              "Windows x64 installer not generated."
+              "Windows installer not generated."
           }
-
-          Write-Host \
-            "Generated installer:"
 
           $installers |
             Select-Object \
@@ -1249,10 +1227,10 @@ jobs:
               -AutoSize
 
       # ============================================================
-      # 11. 只有全部成功以后才提交测试分支
+      # 11. 成功后提交 V2.8 测试分支
       # ============================================================
 
-      - name: Commit V2.8 source
+      - name: Commit V2.8
         run: |
           git config \
             user.name \
@@ -1267,7 +1245,7 @@ jobs:
           if git diff --cached --quiet
           then
             echo \
-              "No source changes."
+              "No changes."
           else
             git commit \
               -m "Add Douyin offline anchor monitoring"
@@ -1279,10 +1257,10 @@ jobs:
             douyin-v2.8-anchor-monitor-test
 
       # ============================================================
-      # 12. 上传安装包
+      # 12. Artifact
       # ============================================================
 
-      - name: Upload Windows installer
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: fideo-${{ inputs.version }}-douyin-v2.8-anchor-monitor-windows-x64
@@ -1296,19 +1274,17 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
         run: |
           {
-            echo "# Fideo Douyin V2.8 Anchor Monitor"
+            echo "# Fideo Douyin V2.8"
             echo
             echo "Version: \`$APP_VERSION\`"
             echo
             echo "Branch: \`douyin-v2.8-anchor-monitor-test\`"
             echo
-            echo "- Supports Douyin live-room URLs"
-            echo "- Supports Douyin streamer profile URLs"
-            echo "- Offline streamer profile can be saved"
-            echo "- Uses sec_user_id for monitoring"
-            echo "- Resolves web_rid after streamer goes live"
-            echo "- Keeps V2.7 recording quality logic"
-            echo "- Keeps auto-record mode"
-            echo "- Keeps notify-only mode"
-            echo "- Preview remains removed"
+            echo "- Douyin live room supported"
+            echo "- Douyin streamer profile supported"
+            echo "- Offline anchor can stay in monitor list"
+            echo "- sec_user_id based lookup"
+            echo "- web_rid resolved when live"
+            echo "- Existing recording logic retained"
+            echo "- Existing notify-only mode retained"
           } >> "$GITHUB_STEP_SUMMARY"
