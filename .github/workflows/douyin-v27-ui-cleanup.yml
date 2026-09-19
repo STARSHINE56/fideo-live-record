@@ -44,23 +44,23 @@ jobs:
           npm ci
 
       # ============================================================
-      # 彻底删除主进程预览代码
+      # 彻底删除预览后端 / IPC
       # ============================================================
 
-      - name: Remove preview backend and IPC completely
+      - name: Remove preview backend and IPC
         run: |
           cat > "$RUNNER_TEMP/remove-preview.cjs" <<'NODE'
           const fs = require('fs')
 
-          const read = (path) =>
-            fs.readFileSync(path, 'utf8')
+          const read = (p) =>
+            fs.readFileSync(p, 'utf8')
 
-          const write = (path, content) =>
-            fs.writeFileSync(path, content, 'utf8')
+          const write = (p, s) =>
+            fs.writeFileSync(p, s, 'utf8')
 
-          // --------------------------------------------------
-          // src/main/index.ts
-          // --------------------------------------------------
+          // ========================================================
+          // main/index.ts
+          // ========================================================
 
           {
             const path =
@@ -69,80 +69,109 @@ jobs:
             let text =
               read(path)
 
-            const previewNameIndex =
+            const navIndex =
               text.indexOf(
-                'START_STREAM_PREVIEW'
+                'ipcMain.handle(NAV_BY_DEFAULT_BROWSER'
+              )
+
+            if (navIndex < 0) {
+              throw new Error(
+                'NAV_BY_DEFAULT_BROWSER handler not found'
+              )
+            }
+
+            const previewMarker =
+              text.indexOf(
+                'START_STREAM_PREVIEW',
+                navIndex
+              )
+
+            if (previewMarker < 0) {
+              throw new Error(
+                'Preview handler marker not found'
+              )
+            }
+
+            const previewBlockStart =
+              text.lastIndexOf(
+                'ipcMain.handle',
+                previewMarker
+              )
+
+            const recordMarker =
+              text.indexOf(
+                'START_STREAM_RECORD',
+                previewMarker
+              )
+
+            if (recordMarker < 0) {
+              throw new Error(
+                'START_STREAM_RECORD marker not found'
+              )
+            }
+
+            const recordBlockStart =
+              text.lastIndexOf(
+                'ipcMain.handle',
+                recordMarker
               )
 
             if (
-              previewNameIndex >= 0
+              previewBlockStart < 0 ||
+              recordBlockStart <=
+                previewBlockStart
             ) {
-              const blockStart =
-                text.lastIndexOf(
-                  'ipcMain.handle',
-                  previewNameIndex
-                )
-
-              const recordStart =
-                text.indexOf(
-                  'ipcMain.handle(START_STREAM_RECORD',
-                  previewNameIndex
-                )
-
-              if (
-                blockStart < 0 ||
-                recordStart < 0 ||
-                recordStart <= blockStart
-              ) {
-                throw new Error(
-                  'Unable to locate complete preview IPC block in main/index.ts'
-                )
-              }
-
-              console.log(
-                'Removing preview IPC block:',
-                blockStart,
-                '->',
-                recordStart
+              throw new Error(
+                'Invalid preview IPC boundaries'
               )
-
-              text =
-                text.slice(
-                  0,
-                  blockStart
-                ) +
-                text.slice(
-                  recordStart
-                )
             }
 
+            console.log(
+              'Removing preview IPC block:',
+              previewBlockStart,
+              '->',
+              recordBlockStart
+            )
+
+            text =
+              text.slice(
+                0,
+                previewBlockStart
+              ) +
+              text.slice(
+                recordBlockStart
+              )
+
+            // 删除 preview transcoder import
             text =
               text.replace(
-                /import\s*\{\s*startPreviewTranscoder\s*,\s*stopPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
+                /import\s*\{[\s\S]*?startPreviewTranscoder[\s\S]*?\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
                 ''
               )
 
             text =
               text.replace(
-                /import\s*\{\s*stopPreviewTranscoder\s*,\s*startPreviewTranscoder\s*\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
+                /import\s*\{[\s\S]*?stopPreviewTranscoder[\s\S]*?\}\s*from\s*['"]\.\/preview-transcoder['"]\s*;?\s*/g,
+                ''
+              )
+
+            // 删除常量 import
+            text =
+              text.replace(
+                /^[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/gm,
                 ''
               )
 
             text =
               text.replace(
-                /[ \t]*START_STREAM_PREVIEW,[ \t]*\r?\n/g,
+                /^[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/gm,
                 ''
               )
 
+            // 删除关闭窗口时残留调用
             text =
               text.replace(
-                /[ \t]*STOP_STREAM_PREVIEW,[ \t]*\r?\n/g,
-                ''
-              )
-
-            text =
-              text.replace(
-                /[ \t]*(?:void\s+|await\s+)?stopPreviewTranscoder\(\)[ \t]*;?[ \t]*\r?\n/g,
+                /^[ \t]*(?:void\s+|await\s+)?stopPreviewTranscoder\(\)[ \t]*;?[ \t]*\r?\n/gm,
                 ''
               )
 
@@ -152,9 +181,9 @@ jobs:
             )
           }
 
-          // --------------------------------------------------
-          // src/const.ts
-          // --------------------------------------------------
+          // ========================================================
+          // const.ts
+          // ========================================================
 
           {
             const path =
@@ -181,9 +210,9 @@ jobs:
             )
           }
 
-          // --------------------------------------------------
+          // ========================================================
           // preload/index.ts
-          // --------------------------------------------------
+          // ========================================================
 
           {
             const path =
@@ -241,9 +270,9 @@ jobs:
             )
           }
 
-          // --------------------------------------------------
+          // ========================================================
           // preload/index.d.ts
-          // --------------------------------------------------
+          // ========================================================
 
           {
             const path =
@@ -290,17 +319,17 @@ jobs:
           }
 
           console.log(
-            'Preview backend fully removed.'
+            'Preview backend and IPC removed.'
           )
           NODE
 
           node "$RUNNER_TEMP/remove-preview.cjs"
 
       # ============================================================
-      # 操作栏
+      # 重写操作栏，完全去掉预览
       # ============================================================
 
-      - name: Rewrite operation bar without preview
+      - name: Rewrite operation bar
         run: |
           cat > src/renderer/src/components/StreamConfigList/components/OperationBar.tsx <<'TS'
           import {
@@ -315,7 +344,7 @@ jobs:
 
           import UseThemeIcon from '@/components/UseThemeIcon'
           import Dialog from '@/components/Dialog'
-          import StreamConfigSheet from '@renderer/components/StreamConfigSheet'
+          import StreamConfigSheet from '@/components/StreamConfigSheet'
 
           import {
             useStreamConfigStore
@@ -338,10 +367,13 @@ jobs:
 
           import darkPlayIcon from '@/assets/images/dark/play.svg'
           import lightPlayIcon from '@/assets/images/light/play.svg'
+
           import darkPauseIcon from '@/assets/images/dark/pause.svg'
           import lightPauseIcon from '@/assets/images/light/pause.svg'
+
           import darkSettingIcon from '@/assets/images/dark/setting.svg'
           import lightSettingIcon from '@/assets/images/light/setting.svg'
+
           import darkDeleteIcon from '@/assets/images/dark/close.svg'
           import lightDeleteIcon from '@/assets/images/light/close.svg'
 
@@ -487,7 +519,7 @@ jobs:
                       })
                     )
 
-                const current =
+                const latest =
                   useStreamConfigStore
                     .getState()
                     .streamConfigList
@@ -500,8 +532,8 @@ jobs:
                     )
 
                 if (
-                  !current ||
-                  current.status ===
+                  !latest ||
+                  latest.status ===
                     StreamStatus.NOT_STARTED
                 ) {
                   return
@@ -510,8 +542,10 @@ jobs:
                 if (
                   result.code ===
                     SUCCESS_CODE &&
-                  result.liveUrls
-                    .length >
+                  Array.isArray(
+                    result.liveUrls
+                  ) &&
+                  result.liveUrls.length >
                     0
                 ) {
                   if (
@@ -534,7 +568,6 @@ jobs:
                         t(
                           'stream_config.live_detected'
                         ),
-
                         message
                       )
 
@@ -762,7 +795,7 @@ jobs:
                   return
                 }
 
-                const message =
+                const msg =
                   crawlerErrorCodeToI18nMessage(
                     code,
                     'error.start_record.'
@@ -785,7 +818,7 @@ jobs:
 
                   description:
                     t(
-                      message
+                      msg
                     ),
 
                   variant:
@@ -872,21 +905,18 @@ jobs:
                     timer.current =
                       setTimeout(
                         handleStart,
-
                         2000
                       )
                   }
 
                 emitter.on(
                   RECORD_END_NOT_USER_STOP,
-
                   onEnd as any
                 )
 
                 return () => {
                   emitter.off(
                     RECORD_END_NOT_USER_STOP,
-
                     onEnd as any
                   )
                 }
@@ -915,7 +945,7 @@ jobs:
 
             return (
               <>
-                <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-background/80 p-1.5 shadow-sm">
+                <div className="flex shrink-0 items-center gap-1 rounded-lg border bg-background/80 p-1 shadow-sm">
                   {streamConfig.status ===
                   StreamStatus.NOT_STARTED ? (
                     <UseThemeIcon
@@ -1036,10 +1066,10 @@ jobs:
           TS
 
       # ============================================================
-      # 状态进度
+      # 状态条
       # ============================================================
 
-      - name: Rewrite task progress UI
+      - name: Rewrite status progress
         run: |
           cat > src/renderer/src/components/StreamConfigList/components/Progress.tsx <<'TS'
           import {
@@ -1068,7 +1098,7 @@ jobs:
             ) {
               return (
                 <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-blue-500/15">
-                  <div className="absolute top-0 h-full w-12 rounded-full bg-blue-500 animate-progress" />
+                  <div className="absolute left-0 top-0 h-full w-12 rounded-full bg-blue-500 animate-progress" />
                 </div>
               )
             }
@@ -1093,10 +1123,10 @@ jobs:
           TS
 
       # ============================================================
-      # 卡片
+      # 卡片 UI
       # ============================================================
 
-      - name: Rewrite task card UI
+      - name: Rewrite stream card
         run: |
           cat > src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx <<'TS'
           import {
@@ -1192,7 +1222,7 @@ jobs:
                 : '--'
 
             return (
-              <Card className="stream-card overflow-hidden">
+              <Card className="stream-card overflow-hidden shadow-sm">
                 <CardHeader className="pb-4">
                   <div className="flex min-w-0 items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
@@ -1312,93 +1342,21 @@ jobs:
           TS
 
       # ============================================================
-      # 顶部筛选全部状态
+      # 全局布局 / 状态筛选 / 设置页
       # ============================================================
 
-      - name: Add complete status filters
-        run: |
-          cat > "$RUNNER_TEMP/nav.cjs" <<'NODE'
-          const fs =
-            require('fs')
-
-          const path =
-            'src/renderer/src/components/NavBar/NavBar.tsx'
-
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          const old =
-          `<SelectItem value="-1">{t('stream_config.all')}</SelectItem>
-              <SelectItem value="2">{t('stream_config.monitoring')}</SelectItem>
-              <SelectItem value="3">{t('stream_config.recording')}</SelectItem>`
-
-          const next =
-          `<SelectItem value="-1">{t('stream_config.all')}</SelectItem>
-              <SelectItem value="0">{t('stream_config.not_started')}</SelectItem>
-              <SelectItem value="1">{t('stream_config.preparing_to_record')}</SelectItem>
-              <SelectItem value="2">{t('stream_config.monitoring')}</SelectItem>
-              <SelectItem value="3">{t('stream_config.recording')}</SelectItem>
-              <SelectItem value="4">{t('stream_config.video_format_conversion')}</SelectItem>`
-
-          if (
-            text.includes(
-              old
-            )
-          ) {
-            text =
-              text.replace(
-                old,
-                next
-              )
-          }
-
-          text =
-            text.replace(
-              'className="w-[180px]"',
-              'className="w-[170px]"'
-            )
-
-          fs.writeFileSync(
-            path,
-            text,
-            'utf8'
-          )
-          NODE
-
-          node "$RUNNER_TEMP/nav.cjs"
-
-      # ============================================================
-      # 主布局、设置布局、文案
-      # ============================================================
-
-      - name: Optimize global layouts
+      - name: Optimize UI layout
         run: |
           cat > "$RUNNER_TEMP/ui.cjs" <<'NODE'
-          const fs =
-            require('fs')
+          const fs = require('fs')
 
-          const read =
-            (path) =>
-              fs.readFileSync(
-                path,
-                'utf8'
-              )
+          const read = (p) =>
+            fs.readFileSync(p, 'utf8')
 
-          const write =
-            (
-              path,
-              text
-            ) =>
-              fs.writeFileSync(
-                path,
-                text,
-                'utf8'
-              )
+          const write = (p, s) =>
+            fs.writeFileSync(p, s, 'utf8')
 
-          // App
+          // App root
           {
             const path =
               'src/renderer/src/App.tsx'
@@ -1406,22 +1364,9 @@ jobs:
             let text =
               read(path)
 
-            const pattern =
-              /<TitleBar\s*\/>\s*<NavBar\s*\/>\s*<StreamConfigList\s*\/>\s*<Toaster\s*\/>/m
-
-            if (
-              !pattern.test(
-                text
-              )
-            ) {
-              throw new Error(
-                'App root layout not found'
-              )
-            }
-
             text =
               text.replace(
-                pattern,
+                /<TitleBar\s*\/>\s*<NavBar\s*\/>\s*<StreamConfigList\s*\/>\s*<Toaster\s*\/>/m,
 
                 `<div className="flex h-screen flex-col overflow-hidden bg-muted/20">
                   <div className="shrink-0 bg-background">
@@ -1446,7 +1391,7 @@ jobs:
             )
           }
 
-          // List
+          // Stream list
           {
             const path =
               'src/renderer/src/components/StreamConfigList/StreamConfigList.tsx'
@@ -1467,7 +1412,63 @@ jobs:
             )
           }
 
-          // Side sheets
+          // Nav filter
+          {
+            const path =
+              'src/renderer/src/components/NavBar/NavBar.tsx'
+
+            let text =
+              read(path)
+
+            if (
+              !text.includes(
+                'value="0"'
+              )
+            ) {
+              text =
+                text.replace(
+                  /<SelectItem value="-1">[\s\S]*?<\/SelectItem>\s*<SelectItem value="2">/m,
+
+                  `<SelectItem value="-1">
+                    {t('stream_config.all')}
+                  </SelectItem>
+
+                  <SelectItem value="0">
+                    {t('stream_config.not_started')}
+                  </SelectItem>
+
+                  <SelectItem value="1">
+                    {t('stream_config.preparing_to_record')}
+                  </SelectItem>
+
+                  <SelectItem value="2">`
+                )
+            }
+
+            if (
+              !text.includes(
+                'value="4"'
+              )
+            ) {
+              text =
+                text.replace(
+                  /(<SelectItem value="3">[\s\S]*?<\/SelectItem>)/m,
+
+                  `$1
+
+                  <SelectItem value="4">
+                    {t('stream_config.video_format_conversion')}
+                  </SelectItem>`
+                )
+            }
+
+            write(
+              path,
+              text
+            )
+          }
+
+          // Sheet spacing
           for (
             const path of [
               'src/renderer/src/components/StreamConfigSheet.tsx',
@@ -1557,7 +1558,7 @@ jobs:
             )
           }
 
-          // CSP restore
+          // Restore CSP
           {
             const path =
               'src/renderer/index.html'
@@ -1579,7 +1580,7 @@ jobs:
           }
 
           console.log(
-            'Global UI layouts optimized.'
+            'UI layout optimized.'
           )
           NODE
 
@@ -1613,7 +1614,7 @@ jobs:
           CSS
 
       # ============================================================
-      # 删除预览依赖及文件
+      # 删除预览依赖 / 文件
       # ============================================================
 
       - name: Remove preview dependencies
@@ -1622,7 +1623,7 @@ jobs:
             hls.js \
             mpegts.js
 
-      - name: Remove preview source files
+      - name: Remove preview files
         run: |
           rm -f \
             src/main/preview-transcoder.ts \
@@ -1640,13 +1641,11 @@ jobs:
             --no-git-tag-version
 
       # ============================================================
-      # 严格检查
+      # 完整检查
       # ============================================================
 
-      - name: Verify preview completely removed
+      - name: Verify preview removed
         run: |
-          echo "Searching for preview leftovers..."
-
           result="$(
             grep -R \
               -n \
@@ -1659,7 +1658,7 @@ jobs:
           if [ -n "$result" ]
           then
             echo "$result"
-            echo "Preview leftovers detected."
+            echo "ERROR: Preview leftovers remain."
             exit 1
           fi
 
@@ -1671,7 +1670,7 @@ jobs:
             pkg.dependencies?.['hls.js']
           ) {
             throw new Error(
-              'hls.js not removed'
+              'hls.js still installed'
             )
           }
 
@@ -1679,56 +1678,16 @@ jobs:
             pkg.dependencies?.['mpegts.js']
           ) {
             throw new Error(
-              'mpegts.js not removed'
+              'mpegts.js still installed'
             )
           }
 
           console.log(
-            'Preview fully removed.'
+            'Preview completely removed.'
           )
           NODE
 
-      - name: Verify main IPC structure
-        run: |
-          node - <<'NODE'
-          const fs =
-            require('fs')
-
-          const text =
-            fs.readFileSync(
-              'src/main/index.ts',
-              'utf8'
-            )
-
-          if (
-            !text.includes(
-              'ipcMain.handle(START_STREAM_RECORD'
-            )
-          ) {
-            throw new Error(
-              'START_STREAM_RECORD handler missing'
-            )
-          }
-
-          if (
-            text.includes(
-              'START_STREAM_PREVIEW'
-            ) ||
-            text.includes(
-              'startPreviewTranscoder'
-            )
-          ) {
-            throw new Error(
-              'Preview main-process code still remains'
-            )
-          }
-
-          console.log(
-            'Main IPC structure valid.'
-          )
-          NODE
-
-      - name: Verify retained features
+      - name: Verify recording and monitor functions
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
@@ -1756,6 +1715,10 @@ jobs:
             "audioCodec('copy')" \
             src/main/ffmpeg/record.ts
 
+          grep -q \
+            "ipcMain.handle(START_STREAM_RECORD" \
+            src/main/index.ts
+
           node -e "
           const p =
             require('./package.json');
@@ -1777,7 +1740,7 @@ jobs:
           "
 
       # ============================================================
-      # TypeScript + 构建
+      # TypeScript / Build
       # ============================================================
 
       - name: TypeScript check
@@ -1820,7 +1783,7 @@ jobs:
             Format-Table -AutoSize
 
       # ============================================================
-      # 保存 V2.7
+      # 保存测试分支
       # ============================================================
 
       - name: Commit V2.7 source
@@ -1837,8 +1800,7 @@ jobs:
 
           if git diff --cached --quiet
           then
-            echo \
-              "No source changes."
+            echo "No source changes."
           else
             git commit \
               -m "Remove preview and optimize monitoring UI"
@@ -1863,21 +1825,21 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
         run: |
           {
-            echo "# Fideo V2.7"
+            echo "# Fideo V2.7 UI Cleanup"
             echo
             echo "Version: \`$APP_VERSION\`"
             echo
             echo "Branch: \`douyin-v2.7-ui-test\`"
             echo
-            echo "- Preview feature completely removed"
-            echo "- Preview IPC removed"
-            echo "- HLS / MPEGTS dependencies removed"
-            echo "- Task card layout improved"
-            echo "- Monitoring and recording state UI improved"
-            echo "- Complete status filters"
-            echo "- Settings spacing improved"
-            echo "- Notify-only mode retained"
-            echo "- Windows notification retained"
-            echo "- Xizhi WeChat notification retained"
-            echo "- Douyin quality selection retained"
+            echo "- Removed live preview completely"
+            echo "- Removed preview IPC"
+            echo "- Removed HLS / MPEGTS dependencies"
+            echo "- Optimized card layout"
+            echo "- Optimized monitoring / recording states"
+            echo "- Added complete status filters"
+            echo "- Improved settings layout"
+            echo "- Retained notify-only monitoring"
+            echo "- Retained Windows notifications"
+            echo "- Retained Xizhi notifications"
+            echo "- Retained Douyin recording quality selection"
           } >> "$GITHUB_STEP_SUMMARY"
