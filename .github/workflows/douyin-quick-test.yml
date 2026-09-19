@@ -1,10 +1,10 @@
-name: Douyin Parser Quick Test
+name: Douyin Parser Quick Test V2
 
 on:
   workflow_dispatch:
     inputs:
       room_url:
-        description: "抖音直播间地址，例如 https://live.douyin.com/123456"
+        description: "支持 live.douyin.com 房间链接或 v.douyin.com 分享短链"
         required: true
         type: string
 
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   quick-test:
-    name: Quick Douyin API Test
+    name: Quick Douyin API Test V2
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -37,10 +37,7 @@ jobs:
       - name: Prepare A-Bogus signer
         shell: bash
         run: |
-          if [ ! -f "src/main/crawler/plugins/douyin-abogus.js" ]; then
-            echo "找不到 douyin-abogus.js"
-            exit 1
-          fi
+          test -f src/main/crawler/plugins/douyin-abogus.js
 
           cp \
             src/main/crawler/plugins/douyin-abogus.js \
@@ -50,48 +47,18 @@ jobs:
         shell: bash
         run: |
           cat > "$RUNNER_TEMP/douyin-probe.mjs" <<'EOF'
+          import fs from 'node:fs'
+
           import {
             generateABogus
           } from './douyin-abogus.mjs'
 
-          const roomUrl =
+          const inputUrl =
             process.env.ROOM_URL?.trim()
 
-          if (!roomUrl) {
+          if (!inputUrl) {
             throw new Error(
               'ROOM_URL is empty'
-            )
-          }
-
-          let parsedRoomUrl
-
-          try {
-            parsedRoomUrl =
-              new URL(roomUrl)
-          } catch {
-            throw new Error(
-              '直播间 URL 无效'
-            )
-          }
-
-          if (
-            parsedRoomUrl.hostname !==
-            'live.douyin.com'
-          ) {
-            throw new Error(
-              '快速测试目前只接受 https://live.douyin.com/数字ID'
-            )
-          }
-
-          const roomId =
-            parsedRoomUrl.pathname
-              .split('/')
-              .filter(Boolean)
-              .pop()
-
-          if (!roomId) {
-            throw new Error(
-              '没有找到直播间 ID'
             )
           }
 
@@ -99,26 +66,6 @@ jobs:
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
             'AppleWebKit/537.36 (KHTML, like Gecko) ' +
             'Chrome/123.0.0.0 Safari/537.36'
-
-          const baseUrl =
-            'https://live.douyin.com/'
-
-          const roomPageUrl =
-            `${baseUrl}${roomId}`
-
-          function safeText(value) {
-            if (
-              value === undefined ||
-              value === null
-            ) {
-              return ''
-            }
-
-            return String(value)
-              .replace(/\r/g, ' ')
-              .replace(/\n/g, ' ')
-              .slice(0, 300)
-          }
 
           async function fetchWithTimeout(
             url,
@@ -148,7 +95,129 @@ jobs:
             }
           }
 
-          function getSetCookie(response) {
+          async function resolveDouyinUrl(
+            rawUrl
+          ) {
+            let url
+
+            try {
+              url = new URL(rawUrl)
+            } catch {
+              throw new Error(
+                '输入的 URL 无效'
+              )
+            }
+
+            if (
+              url.hostname ===
+              'live.douyin.com'
+            ) {
+              return {
+                finalUrl:
+                  url.toString(),
+
+                sourceType:
+                  'live'
+              }
+            }
+
+            if (
+              url.hostname ===
+                'v.douyin.com' ||
+              url.hostname ===
+                'www.douyin.com' ||
+              url.hostname ===
+                'douyin.com'
+            ) {
+              const response =
+                await fetchWithTimeout(
+                  rawUrl,
+                  {
+                    headers: {
+                      'User-Agent':
+                        UA
+                    },
+
+                    redirect:
+                      'follow'
+                  }
+                )
+
+              const finalUrl =
+                response.url
+
+              return {
+                finalUrl,
+                sourceType:
+                  'share'
+              }
+            }
+
+            throw new Error(
+              `暂不支持这个域名: ${url.hostname}`
+            )
+          }
+
+          function extractRoomId(
+            resolvedUrl
+          ) {
+            const url =
+              new URL(
+                resolvedUrl
+              )
+
+            if (
+              url.hostname ===
+              'live.douyin.com'
+            ) {
+              const parts =
+                url.pathname
+                  .split('/')
+                  .filter(Boolean)
+
+              const roomId =
+                parts[parts.length - 1]
+
+              if (
+                roomId &&
+                /^\d+$/.test(roomId)
+              ) {
+                return roomId
+              }
+            }
+
+            const candidates = [
+              url.searchParams.get(
+                'room_id'
+              ),
+              url.searchParams.get(
+                'roomId'
+              ),
+              url.searchParams.get(
+                'web_rid'
+              ),
+              url.searchParams.get(
+                'webRid'
+              )
+            ]
+
+            for (
+              const item of candidates
+            ) {
+              if (
+                item &&
+                /^\d+$/.test(item)
+              ) {
+                return item
+              }
+            }
+
+            return null
+          }
+
+          function getSetCookie(
+            response
+          ) {
             try {
               if (
                 typeof response.headers
@@ -170,66 +239,72 @@ jobs:
             )
           }
 
-          async function getBootstrapCookies() {
+          async function bootstrap(
+            roomUrl
+          ) {
             const headers = {
-              'User-Agent': UA,
+              'User-Agent':
+                UA,
+
               Referer:
                 'https://live.douyin.com/'
             }
 
             const [
-              baseResponse,
+              homeResponse,
               roomResponse
             ] = await Promise.all([
               fetchWithTimeout(
-                baseUrl,
+                'https://live.douyin.com/',
                 {
                   headers,
-                  redirect: 'manual'
+                  redirect:
+                    'manual'
                 }
               ),
+
               fetchWithTimeout(
-                roomPageUrl,
+                roomUrl,
                 {
                   headers,
-                  redirect: 'manual'
+                  redirect:
+                    'manual'
                 }
               )
             ])
 
-            const baseCookie =
-              getSetCookie(
-                baseResponse
-              )
-
-            const roomCookie =
-              getSetCookie(
-                roomResponse
-              )
-
             return {
               cookie: [
-                baseCookie,
-                roomCookie
+                getSetCookie(
+                  homeResponse
+                ),
+                getSetCookie(
+                  roomResponse
+                )
               ]
                 .filter(Boolean)
                 .join('; '),
 
-              baseStatus:
-                baseResponse.status,
+              homeStatus:
+                homeResponse.status,
 
-              roomPageStatus:
+              roomStatus:
                 roomResponse.status
             }
           }
 
-          function buildParams() {
+          function buildParams(
+            roomId
+          ) {
             return new URLSearchParams({
               aid: '6383',
-              app_name: 'douyin_web',
+              app_name:
+                'douyin_web',
               live_id: '1',
-              device_platform: 'web',
-              language: 'zh-CN',
+              device_platform:
+                'web',
+              language:
+                'zh-CN',
               browser_language:
                 'zh-CN',
               browser_platform:
@@ -246,29 +321,23 @@ jobs:
             })
           }
 
-          function collectUrls(room) {
-            const result = {
-              flv: [],
-              hls: []
-            }
+          function collectStreams(
+            room
+          ) {
+            const flv = []
+            const hls = []
 
             const add = (
-              type,
+              list,
               value
             ) => {
               if (
-                typeof value !==
-                'string'
+                typeof value ===
+                  'string' &&
+                value &&
+                !list.includes(value)
               ) {
-                return
-              }
-
-              if (
-                !result[type]
-                  .includes(value)
-              ) {
-                result[type]
-                  .push(value)
+                list.push(value)
               }
             }
 
@@ -276,28 +345,35 @@ jobs:
               room?.stream_url
 
             if (!streamUrl) {
-              return result
+              return {
+                flv,
+                hls
+              }
             }
 
             const parseStreamData =
-              (value) => {
-                if (!value) {
+              (streamData) => {
+                if (!streamData) {
                   return
                 }
 
                 try {
                   const parsed =
-                    typeof value ===
+                    typeof streamData ===
                     'string'
-                      ? JSON.parse(value)
-                      : value
+                      ? JSON.parse(
+                          streamData
+                        )
+                      : streamData
 
                   const data =
                     parsed?.data || {}
 
                   for (
                     const item of
-                    Object.values(data)
+                    Object.values(
+                      data
+                    )
                   ) {
                     const main =
                       item?.main
@@ -307,17 +383,17 @@ jobs:
                     }
 
                     add(
-                      'flv',
+                      flv,
                       main.flv
                     )
 
                     add(
-                      'hls',
+                      hls,
                       main.hls
                     )
                   }
                 } catch {
-                  // ignore malformed data
+                  // ignore
                 }
               }
 
@@ -332,7 +408,8 @@ jobs:
                 )
               ) {
                 parseStreamData(
-                  item?.stream_data
+                  item
+                    ?.stream_data
                 )
               }
             }
@@ -353,7 +430,7 @@ jobs:
               )
             ) {
               add(
-                'flv',
+                flv,
                 value
               )
             }
@@ -367,55 +444,59 @@ jobs:
               )
             ) {
               add(
-                'hls',
+                hls,
                 value
               )
             }
 
-            return result
+            return {
+              flv,
+              hls
+            }
           }
 
-          async function requestApi(
-            signed,
-            cookie
+          async function probe(
+            roomId,
+            cookie,
+            signed
           ) {
             const params =
-              buildParams()
+              buildParams(
+                roomId
+              )
 
             let aBogusLength = 0
 
             if (signed) {
-              const query =
-                params.toString()
-
               const aBogus =
                 generateABogus(
-                  query,
+                  params.toString(),
                   UA
                 )
-
-              aBogusLength =
-                aBogus.length
 
               params.set(
                 'a_bogus',
                 aBogus
               )
+
+              aBogusLength =
+                aBogus.length
             }
 
-            const url =
-              `${baseUrl}webcast/room/web/enter/?${params.toString()}`
+            const api =
+              'https://live.douyin.com/webcast/room/web/enter/?' +
+              params.toString()
 
             const response =
               await fetchWithTimeout(
-                url,
+                api,
                 {
                   headers: {
                     'User-Agent':
                       UA,
 
                     Referer:
-                      roomPageUrl,
+                      `https://live.douyin.com/${roomId}`,
 
                     Cookie:
                       cookie || ''
@@ -448,18 +529,21 @@ jobs:
             const room =
               rooms[0]
 
-            const urls =
-              collectUrls(room)
+            const streams =
+              collectStreams(
+                room
+              )
 
             return {
               signed,
+
               httpStatus:
                 response.status,
 
-              jsonOk:
-                Boolean(json),
-
               parseError,
+
+              hasJson:
+                Boolean(json),
 
               hasData:
                 Boolean(data),
@@ -467,15 +551,10 @@ jobs:
               roomCount:
                 rooms.length,
 
-              roomStatus:
+              status:
                 room?.status,
 
-              ownerExists:
-                Boolean(
-                  room?.owner
-                ),
-
-              ownerName:
+              owner:
                 room?.owner
                   ?.nickname || '',
 
@@ -491,16 +570,14 @@ jobs:
                     ?.pull_datas
                 ),
 
-              prompts:
-                safeText(
-                  data?.prompts
-                ),
-
               flvCount:
-                urls.flv.length,
+                streams.flv.length,
 
               hlsCount:
-                urls.hls.length,
+                streams.hls.length,
+
+              prompts:
+                data?.prompts || '',
 
               aBogusLength
             }
@@ -522,7 +599,7 @@ jobs:
 
             console.log(
               'JSON:',
-              result.jsonOk
+              result.hasJson
             )
 
             console.log(
@@ -537,18 +614,13 @@ jobs:
 
             console.log(
               'room status:',
-              result.roomStatus ??
+              result.status ??
                 'N/A'
             )
 
             console.log(
-              'owner exists:',
-              result.ownerExists
-            )
-
-            console.log(
               'owner:',
-              result.ownerName ||
+              result.owner ||
                 'N/A'
             )
 
@@ -573,20 +645,16 @@ jobs:
             )
 
             if (
-              result.signed
-            ) {
-              console.log(
-                'a_bogus length:',
-                result.aBogusLength
-              )
-            }
-
-            if (
               result.prompts
             ) {
               console.log(
                 'prompts:',
-                result.prompts
+                String(
+                  result.prompts
+                ).slice(
+                  0,
+                  300
+                )
               )
             }
 
@@ -598,10 +666,89 @@ jobs:
                 result.parseError
               )
             }
+
+            if (
+              result.signed
+            ) {
+              console.log(
+                'a_bogus length:',
+                result.aBogusLength
+              )
+            }
           }
 
-          const bootstrap =
-            await getBootstrapCookies()
+          const resolved =
+            await resolveDouyinUrl(
+              inputUrl
+            )
+
+          console.log(
+            'Input URL:',
+            inputUrl
+          )
+
+          console.log(
+            'Resolved URL:',
+            resolved.finalUrl
+          )
+
+          console.log(
+            'Source type:',
+            resolved.sourceType
+          )
+
+          let roomId =
+            extractRoomId(
+              resolved.finalUrl
+            )
+
+          if (!roomId) {
+            const pageResponse =
+              await fetchWithTimeout(
+                resolved.finalUrl,
+                {
+                  headers: {
+                    'User-Agent':
+                      UA
+                  }
+                }
+              )
+
+            const html =
+              await pageResponse.text()
+
+            const patterns = [
+              /webRid["':\\\s]+(\d+)/,
+              /web_rid["':\\\s]+(\d+)/,
+              /roomId["':\\\s]+(\d+)/,
+              /room_id["':\\\s]+(\d+)/
+            ]
+
+            for (
+              const pattern of patterns
+            ) {
+              const match =
+                html.match(
+                  pattern
+                )
+
+              if (match?.[1]) {
+                roomId =
+                  match[1]
+
+                break
+              }
+            }
+          }
+
+          if (!roomId) {
+            throw new Error(
+              '无法从这个抖音链接解析出直播间数字 ID'
+            )
+          }
+
+          const roomUrl =
+            `https://live.douyin.com/${roomId}`
 
           console.log(
             'Room ID:',
@@ -609,51 +756,63 @@ jobs:
           )
 
           console.log(
+            'Room URL:',
+            roomUrl
+          )
+
+          const boot =
+            await bootstrap(
+              roomUrl
+            )
+
+          console.log(
             'Homepage HTTP:',
-            bootstrap.baseStatus
+            boot.homeStatus
           )
 
           console.log(
             'Room page HTTP:',
-            bootstrap.roomPageStatus
+            boot.roomStatus
           )
 
           console.log(
             'Bootstrap cookie:',
-            bootstrap.cookie
+            boot.cookie
               ? 'YES'
               : 'NO'
           )
 
-          const unsignedResult =
-            await requestApi(
-              false,
-              bootstrap.cookie
+          const unsigned =
+            await probe(
+              roomId,
+              boot.cookie,
+              false
             )
 
-          const signedResult =
-            await requestApi(
-              true,
-              bootstrap.cookie
+          const signed =
+            await probe(
+              roomId,
+              boot.cookie,
+              true
             )
 
           printResult(
             'Unsigned Web API',
-            unsignedResult
+            unsigned
           )
 
           printResult(
             'A-Bogus Web API',
-            signedResult
+            signed
           )
 
-          const best =
+          const success =
             [
-              signedResult,
-              unsignedResult
+              unsigned,
+              signed
             ].find(
               (item) =>
-                item.roomStatus === 2 &&
+                item.status === 2 &&
                 (
                   item.flvCount > 0 ||
                   item.hlsCount > 0
@@ -661,54 +820,52 @@ jobs:
             )
 
           const summaryPath =
-            process.env.GITHUB_STEP_SUMMARY
+            process.env
+              .GITHUB_STEP_SUMMARY
 
           if (summaryPath) {
-            const fs =
-              await import(
-                'node:fs'
-              )
-
-            const row =
-              (name, value) =>
-                `| ${name} | ${value} |\n`
-
             let summary =
-              '# 抖音解析快速测试\n\n'
+              '# Douyin Quick Test V2\n\n'
 
             summary +=
-              `直播间：\`${roomId}\`\n\n`
+              `Input: \`${inputUrl}\`\n\n`
 
             summary +=
-              '| 项目 | 未签名接口 | A-Bogus接口 |\n'
+              `Resolved: \`${resolved.finalUrl}\`\n\n`
+
+            summary +=
+              `Room ID: \`${roomId}\`\n\n`
+
+            summary +=
+              '| Item | Unsigned | A-Bogus |\n'
 
             summary +=
               '|---|---:|---:|\n'
 
             summary +=
-              `| HTTP | ${unsignedResult.httpStatus} | ${signedResult.httpStatus} |\n`
+              `| HTTP | ${unsigned.httpStatus} | ${signed.httpStatus} |\n`
 
             summary +=
-              `| room count | ${unsignedResult.roomCount} | ${signedResult.roomCount} |\n`
+              `| Room count | ${unsigned.roomCount} | ${signed.roomCount} |\n`
 
             summary +=
-              `| status | ${unsignedResult.roomStatus ?? 'N/A'} | ${signedResult.roomStatus ?? 'N/A'} |\n`
+              `| Status | ${unsigned.status ?? 'N/A'} | ${signed.status ?? 'N/A'} |\n`
 
             summary +=
-              `| stream_url | ${unsignedResult.streamUrlExists ? '✅' : '❌'} | ${signedResult.streamUrlExists ? '✅' : '❌'} |\n`
+              `| stream_url | ${unsigned.streamUrlExists ? '✅' : '❌'} | ${signed.streamUrlExists ? '✅' : '❌'} |\n`
 
             summary +=
-              `| FLV | ${unsignedResult.flvCount} | ${signedResult.flvCount} |\n`
+              `| FLV | ${unsigned.flvCount} | ${signed.flvCount} |\n`
 
             summary +=
-              `| HLS | ${unsignedResult.hlsCount} | ${signedResult.hlsCount} |\n\n`
+              `| HLS | ${unsigned.hlsCount} | ${signed.hlsCount} |\n\n`
 
-            if (best) {
+            if (success) {
               summary +=
-                '## ✅ 找到正在直播的有效直播流\n'
+                '## ✅ 找到有效直播流\n'
             } else {
               summary +=
-                '## ⚠️ 本次未找到有效直播流\n\n'
+                '## ⚠️ 没找到有效直播流\n\n'
 
               summary +=
                 '这不一定代表主播未开播，也可能是 GitHub Actions 网络出口被抖音风控。\n'
@@ -720,7 +877,7 @@ jobs:
             )
           }
 
-          if (best) {
+          if (success) {
             console.log('')
             console.log(
               'RESULT: LIVE_STREAM_FOUND'
@@ -737,7 +894,7 @@ jobs:
           process.exit(2)
           EOF
 
-      - name: Run Douyin quick test
+      - name: Run Douyin quick test V2
         shell: bash
         env:
           ROOM_URL: ${{ inputs.room_url }}
