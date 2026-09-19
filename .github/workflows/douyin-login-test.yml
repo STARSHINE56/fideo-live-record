@@ -1,0 +1,758 @@
+name: Douyin Login Fix Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-build:
+    name: Patch and Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create test branch
+        shell: bash
+        run: |
+          git switch -C douyin-login-test
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply Douyin login and safety fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def read(path):
+              return Path(path).read_text(encoding="utf-8")
+
+          def write(path, content):
+              Path(path).parent.mkdir(parents=True, exist_ok=True)
+              Path(path).write_text(content, encoding="utf-8")
+
+          def replace_once(path, old, new):
+              text = read(path)
+
+              if new in text:
+                  print(f"[SKIP] already patched: {path}")
+                  return
+
+              if old not in text:
+                  raise RuntimeError(
+                      f"Expected source was not found in {path}.\n"
+                      "Repository source may have changed. Stop instead of applying an unsafe patch."
+                  )
+
+              text = text.replace(old, new, 1)
+              write(path, text)
+              print(f"[OK] patched: {path}")
+
+          # ============================================================
+          # 1. Electron Douyin persistent login session
+          # ============================================================
+
+          write(
+              "src/main/douyin-session.ts",
+              r"""import { BrowserWindow, session } from 'electron'
+
+          const DOUYIN_PARTITION = 'persist:douyin-login'
+
+          let loginWindow: BrowserWindow | null = null
+
+          const douyinSession = () => session.fromPartition(DOUYIN_PARTITION)
+
+          const isDouyinCookieDomain = (domain: string) => {
+            const normalized = domain.replace(/^\./, '').toLowerCase()
+            return normalized === 'douyin.com' || normalized.endsWith('.douyin.com')
+          }
+
+          export function isDouyinUrl(roomUrl: string) {
+            try {
+              const host = new URL(roomUrl).hostname.toLowerCase()
+              return host === 'douyin.com' || host.endsWith('.douyin.com')
+            } catch {
+              return false
+            }
+          }
+
+          async function getDouyinCookies() {
+            const cookies = await douyinSession().cookies.get({})
+            return cookies.filter((cookie) => isDouyinCookieDomain(cookie.domain))
+          }
+
+          export async function getDouyinCookie() {
+            const cookies = await getDouyinCookies()
+
+            const cookieMap = new Map<string, string>()
+
+            for (const cookie of cookies) {
+              if (cookie.name && cookie.value) {
+                cookieMap.set(cookie.name, cookie.value)
+              }
+            }
+
+            return Array.from(cookieMap.entries())
+              .map(([name, value]) => `${name}=${value}`)
+              .join('; ')
+          }
+
+          export async function getDouyinLoginStatus() {
+            const cookies = await getDouyinCookies()
+
+            const authCookieNames = new Set([
+              'sessionid',
+              'sessionid_ss',
+              'sid_guard',
+              'uid_tt',
+              'uid_tt_ss'
+            ])
+
+            const hasSession =
+              cookies.some((cookie) => authCookieNames.has(cookie.name)) ||
+              cookies.length >= 5
+
+            return {
+              hasSession,
+              cookieCount: cookies.length
+            }
+          }
+
+          export async function openDouyinLoginWindow() {
+            if (loginWindow && !loginWindow.isDestroyed()) {
+              loginWindow.show()
+              loginWindow.focus()
+              return getDouyinLoginStatus()
+            }
+
+            return new Promise<{ hasSession: boolean; cookieCount: number }>((resolve) => {
+              loginWindow = new BrowserWindow({
+                width: 1100,
+                height: 760,
+                title: '登录抖音',
+                autoHideMenuBar: true,
+                webPreferences: {
+                  partition: DOUYIN_PARTITION,
+                  contextIsolation: true,
+                  nodeIntegration: false,
+                  sandbox: true
+                }
+              })
+
+              loginWindow.loadURL('https://www.douyin.com/')
+
+              loginWindow.on('closed', async () => {
+                loginWindow = null
+                resolve(await getDouyinLoginStatus())
+              })
+            })
+          }
+
+          export async function clearDouyinLogin() {
+            if (loginWindow && !loginWindow.isDestroyed()) {
+              loginWindow.close()
+            }
+
+            await douyinSession().clearStorageData()
+
+            return {
+              hasSession: false,
+              cookieCount: 0
+            }
+          }
+          """
+          )
+
+          print("[OK] created src/main/douyin-session.ts")
+
+          # ============================================================
+          # 2. IPC constants
+          # ============================================================
+
+          replace_once(
+              "src/const.ts",
+              """export const FRPC_PROCESS_ERROR = 'FRPC_PROCESS_ERROR'
+
+          export const FRP_DOMAIN""",
+              """export const FRPC_PROCESS_ERROR = 'FRPC_PROCESS_ERROR'
+
+          export const DOUYIN_LOGIN = 'DOUYIN_LOGIN'
+          export const DOUYIN_LOGOUT = 'DOUYIN_LOGOUT'
+          export const DOUYIN_LOGIN_STATUS = 'DOUYIN_LOGIN_STATUS'
+
+          export const FRP_DOMAIN"""
+          )
+
+          # ============================================================
+          # 3. Main process imports
+          # ============================================================
+
+          replace_once(
+              "src/main/index.ts",
+              """  STREAM_RECORD_END,
+            USER_CLOSE_WINDOW,
+
+            API_DOMAIN
+          } from '../const'""",
+              """  STREAM_RECORD_END,
+            USER_CLOSE_WINDOW,
+            DOUYIN_LOGIN,
+            DOUYIN_LOGOUT,
+            DOUYIN_LOGIN_STATUS
+          } from '../const'"""
+          )
+
+          replace_once(
+              "src/main/index.ts",
+              """import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
+
+          export const writeLog""",
+              """import { startFrpcProcess, stopFrpc, frpcObj } from './frpc'
+          import {
+            clearDouyinLogin,
+            getDouyinCookie,
+            getDouyinLoginStatus,
+            isDouyinUrl,
+            openDouyinLoginWindow
+          } from './douyin-session'
+
+          export const writeLog"""
+          )
+
+          # ============================================================
+          # 4. Replace original-author update service with user's repo
+          # ============================================================
+
+          replace_once(
+              "src/main/index.ts",
+              """async function checkUpdate() {
+            try {
+              const json = await fetch(`https://${API_DOMAIN}/api/release`)
+              const { tag_name } = await json.json()
+              if (lt(pkg.version, tag_name)) {
+                win?.webContents.send(SHOW_UPDATE_DIALOG)
+              }
+            } catch {
+              // ignore
+            }
+          }""",
+              """async function checkUpdate() {
+            try {
+              const response = await fetch(
+                'https://api.github.com/repos/STARSHINE56/fideo-live-record/releases/latest',
+                {
+                  headers: {
+                    Accept: 'application/vnd.github+json'
+                  }
+                }
+              )
+
+              if (!response.ok) {
+                return
+              }
+
+              const { tag_name } = await response.json()
+
+              if (!tag_name) {
+                return
+              }
+
+              const latestVersion = String(tag_name).replace(/^v/, '')
+
+              if (lt(pkg.version, latestVersion)) {
+                win?.webContents.send(SHOW_UPDATE_DIALOG)
+              }
+            } catch {
+              // Update check should never affect recording.
+            }
+          }"""
+          )
+
+          # ============================================================
+          # 5. Automatically use Douyin Electron session cookie
+          # ============================================================
+
+          replace_once(
+              "src/main/index.ts",
+              """export const writeLog = writeLogWrapper(app.getPath('userData'))
+
+          async function checkUpdate()""",
+              """export const writeLog = writeLogWrapper(app.getPath('userData'))
+
+          async function getEffectiveCookie(roomUrl: string, cookie?: string) {
+            if (cookie || !isDouyinUrl(roomUrl)) {
+              return cookie
+            }
+
+            const sessionCookie = await getDouyinCookie()
+            return sessionCookie || undefined
+          }
+
+          async function checkUpdate()"""
+          )
+
+          replace_once(
+              "src/main/index.ts",
+              """      const { roomUrl, proxy, cookie, title } = info
+                return getLiveUrls({ roomUrl, proxy, cookie }, writeLog.bind(null, title))""",
+              """      const { roomUrl, proxy, cookie, title } = info
+                const effectiveCookie = await getEffectiveCookie(roomUrl, cookie)
+                return getLiveUrls(
+                  { roomUrl, proxy, cookie: effectiveCookie },
+                  writeLog.bind(null, title)
+                )"""
+          )
+
+          replace_once(
+              "src/main/index.ts",
+              """      const { roomUrl, proxy, cookie } = info
+                return getRoomInfo({ roomUrl, proxy, cookie }, writeLog.bind(null, 'Get Room Info'))""",
+              """      const { roomUrl, proxy, cookie } = info
+                const effectiveCookie = await getEffectiveCookie(roomUrl, cookie)
+                return getRoomInfo(
+                  { roomUrl, proxy, cookie: effectiveCookie },
+                  writeLog.bind(null, 'Get Room Info')
+                )"""
+          )
+
+          replace_once(
+              "src/main/index.ts",
+              """    const { roomUrl, proxy, cookie, title, id } = streamConfig
+
+              /**
+               * When requesting""",
+              """    const { roomUrl, proxy, cookie, title, id } = streamConfig
+              const effectiveCookie = await getEffectiveCookie(roomUrl, cookie)
+
+              /**
+               * When requesting"""
+          )
+
+          replace_once(
+              "src/main/index.ts",
+              """    const { code: liveUrlsCode, liveUrls } = await getLiveUrls(
+                { roomUrl, proxy, cookie },
+                writeLog.bind(null, title)
+              )""",
+              """    const { code: liveUrlsCode, liveUrls } = await getLiveUrls(
+                { roomUrl, proxy, cookie: effectiveCookie },
+                writeLog.bind(null, title)
+              )"""
+          )
+
+          # ============================================================
+          # 6. Douyin IPC handlers
+          # ============================================================
+
+          replace_once(
+              "src/main/index.ts",
+              """  ipcMain.handle(OPEN_LOGS_DIR, () => {
+              shell.openPath(resolve(app.getPath('userData'), 'logs'))
+            })
+
+            ipcMain.handle(MINIMIZE_WINDOW""",
+              """  ipcMain.handle(OPEN_LOGS_DIR, () => {
+              shell.openPath(resolve(app.getPath('userData'), 'logs'))
+            })
+
+            ipcMain.handle(DOUYIN_LOGIN, async () => {
+              return await openDouyinLoginWindow()
+            })
+
+            ipcMain.handle(DOUYIN_LOGIN_STATUS, async () => {
+              return await getDouyinLoginStatus()
+            })
+
+            ipcMain.handle(DOUYIN_LOGOUT, async () => {
+              return await clearDouyinLogin()
+            })
+
+            ipcMain.handle(MINIMIZE_WINDOW"""
+          )
+
+          # ============================================================
+          # 7. Preload API
+          # ============================================================
+
+          replace_once(
+              "src/preload/index.ts",
+              """  STREAM_RECORD_END,
+            USER_CLOSE_WINDOW
+          } from '../const'""",
+              """  STREAM_RECORD_END,
+            USER_CLOSE_WINDOW,
+            DOUYIN_LOGIN,
+            DOUYIN_LOGOUT,
+            DOUYIN_LOGIN_STATUS
+          } from '../const'"""
+          )
+
+          replace_once(
+              "src/preload/index.ts",
+              """  retryDownloadDep: () => ipcRenderer.invoke(RETRY_DOWNLOAD_DEP),
+
+            startFrpcProcess:""",
+              """  retryDownloadDep: () => ipcRenderer.invoke(RETRY_DOWNLOAD_DEP),
+
+            loginDouyin: () => ipcRenderer.invoke(DOUYIN_LOGIN),
+            logoutDouyin: () => ipcRenderer.invoke(DOUYIN_LOGOUT),
+            getDouyinLoginStatus: () => ipcRenderer.invoke(DOUYIN_LOGIN_STATUS),
+
+            startFrpcProcess:"""
+          )
+
+          # ============================================================
+          # 8. Preload types
+          # ============================================================
+
+          replace_once(
+              "src/preload/index.d.ts",
+              """      retryDownloadDep: () => void
+
+                startFrpcProcess:""",
+              """      retryDownloadDep: () => void
+
+                loginDouyin: () => Promise<{ hasSession: boolean; cookieCount: number }>
+                logoutDouyin: () => Promise<{ hasSession: boolean; cookieCount: number }>
+                getDouyinLoginStatus: () => Promise<{
+                  hasSession: boolean
+                  cookieCount: number
+                }>
+
+                startFrpcProcess:"""
+          )
+
+          # ============================================================
+          # 9. Default settings Douyin login UI
+          # ============================================================
+
+          replace_once(
+              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx",
+              """import { useEffect } from 'react'""",
+              """import { useEffect, useState } from 'react'"""
+          )
+
+          replace_once(
+              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx",
+              """  const { sheetOpen, setSheetOpen } = props
+
+            const { defaultSettingsConfig""",
+              """  const { sheetOpen, setSheetOpen } = props
+            const [douyinLoggedIn, setDouyinLoggedIn] = useState(false)
+
+            const { defaultSettingsConfig"""
+          )
+
+          replace_once(
+              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx",
+              """  useEffect(() => {
+              form.reset({ ...defaultSettingsConfig })
+            }, [defaultSettingsConfig])
+
+            const handleSelectDir""",
+              """  useEffect(() => {
+              form.reset({ ...defaultSettingsConfig })
+            }, [defaultSettingsConfig])
+
+            useEffect(() => {
+              if (!sheetOpen) return
+
+              window.api.getDouyinLoginStatus().then(({ hasSession }) => {
+                setDouyinLoggedIn(hasSession)
+              })
+            }, [sheetOpen])
+
+            const handleDouyinLogin = async () => {
+              const { hasSession } = await window.api.loginDouyin()
+              setDouyinLoggedIn(hasSession)
+            }
+
+            const handleDouyinLogout = async () => {
+              await window.api.logoutDouyin()
+              setDouyinLoggedIn(false)
+            }
+
+            const handleSelectDir"""
+          )
+
+          marker = """                <FormField
+                            control={form.control}
+                            name="xizhiKey\""""
+
+          replacement = """                <div className="space-y-2">
+                            <FormLabel>{t('default_settings.douyin_account')}</FormLabel>
+                            <div className="flex gap-2">
+                              <Input
+                                value={
+                                  douyinLoggedIn
+                                    ? t('default_settings.douyin_logged_in')
+                                    : t('default_settings.douyin_not_logged_in')
+                                }
+                                disabled
+                                readOnly
+                              />
+                              <Button
+                                variant="outline"
+                                type="button"
+                                onClick={handleDouyinLogin}
+                              >
+                                {t('default_settings.douyin_login')}
+                              </Button>
+                              {douyinLoggedIn && (
+                                <Button
+                                  variant="outline"
+                                  type="button"
+                                  onClick={handleDouyinLogout}
+                                >
+                                  {t('default_settings.douyin_logout')}
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+
+                          <FormField
+                            control={form.control}
+                            name="xizhiKey\""""
+
+          replace_once(
+              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx",
+              marker,
+              replacement
+          )
+
+          # ============================================================
+          # 10. Language strings
+          # ============================================================
+
+          replace_once(
+              "src/renderer/src/locales/locales.js",
+              """        logs_dir: 'Logs Directory',
+                  logs_dir_placeholder: 'Open Logs Directory'""",
+              """        logs_dir: 'Logs Directory',
+                  logs_dir_placeholder: 'Open Logs Directory',
+                  douyin_account: 'Douyin Account',
+                  douyin_login: 'Login to Douyin',
+                  douyin_logout: 'Logout',
+                  douyin_logged_in: 'Douyin session is available',
+                  douyin_not_logged_in: 'Not logged in'"""
+          )
+
+          replace_once(
+              "src/renderer/src/locales/locales.js",
+              """        logs_dir: '日志目录',
+                  logs_dir_placeholder: '打开日志目录'""",
+              """        logs_dir: '日志目录',
+                  logs_dir_placeholder: '打开日志目录',
+                  douyin_account: '抖音账号',
+                  douyin_login: '登录抖音',
+                  douyin_logout: '退出登录',
+                  douyin_logged_in: '抖音登录会话可用',
+                  douyin_not_logged_in: '未登录'"""
+          )
+
+          # ============================================================
+          # 11. Update URL
+          # ============================================================
+
+          replace_once(
+              "src/renderer/src/App.tsx",
+              """https://github.com/chenfan0/fideo-live-record/releases/latest""",
+              """https://github.com/STARSHINE56/fideo-live-record/releases/latest"""
+          )
+
+          # ============================================================
+          # 12. Do not write full API response / stream tokens to logs
+          # ============================================================
+
+          replace_once(
+              "src/main/crawler/capture-error.js",
+              """      const res = await fn.apply(this, realArgs)
+                writeLog(`Fetch Res: ${JSON.stringify(res, null, 2)}`)
+                return res""",
+              """      const res = await fn.apply(this, realArgs)
+                writeLog('Fetch Success')
+                return res"""
+          )
+
+          # ============================================================
+          # 13. Do not print Douyin cookie into debug logs
+          # ============================================================
+
+          text = read("src/main/crawler/plugins/douyin.js")
+
+          text = text.replace(
+              "log('roomUrl:', roomUrl, 'cookie:', cookie, 'proxy:', proxy)",
+              "log('roomUrl:', roomUrl, 'proxy:', proxy)"
+          )
+
+          text = text.replace(
+              "log('roomId:', roomId, 'cookie:', cookie, 'proxy:', proxy)",
+              "log('roomId:', roomId, 'proxy:', proxy)"
+          )
+
+          write("src/main/crawler/plugins/douyin.js", text)
+          print("[OK] removed cookie from Douyin debug logging")
+
+          # ============================================================
+          # 14. Hide original-author Web Control entry
+          #     Code remains, but normal UI can no longer enable it.
+          # ============================================================
+
+          nav_path = "src/renderer/src/components/NavBar/NavBar.tsx"
+          nav = read(nav_path)
+
+          nav = nav.replace(
+              "import WebControlSettingSheet from './components/WebControlSettingSheet'\n",
+              ""
+          )
+
+          nav = nav.replace(
+              "import darkPhoneIcon from '@/assets/images/dark/phone.svg'\n",
+              ""
+          )
+
+          nav = nav.replace(
+              "import lightPhoneIcon from '@/assets/images/light/phone.svg'\n",
+              ""
+          )
+
+          nav = nav.replace(
+              """  //
+            const [webControlSheetOpen, setWebControlSheetOpen] = useState(false)
+
+          """,
+              ""
+          )
+
+          phone_block = """        <UseThemeIcon
+                    dark={darkPhoneIcon}
+                    light={lightPhoneIcon}
+                    className="w-[22px] h-[22px] cursor-pointer select-none"
+                    tooltipContent={t('nav_bar.web_control')}
+                    handleClick={() => setWebControlSheetOpen(true)}
+                  />
+          """
+
+          nav = nav.replace(phone_block, "")
+
+          web_control_block = """      <WebControlSettingSheet
+                  setSheetOpen={setWebControlSheetOpen}
+                  sheetOpen={webControlSheetOpen}
+                />
+          """
+
+          nav = nav.replace(web_control_block, "")
+
+          write(nav_path, nav)
+          print("[OK] hidden original Web Control UI")
+
+          # ============================================================
+          # 15. Sanity checks
+          # ============================================================
+
+          checks = {
+              "src/main/index.ts": [
+                  "getEffectiveCookie",
+                  "DOUYIN_LOGIN",
+                  "api.github.com/repos/STARSHINE56/fideo-live-record/releases/latest"
+              ],
+              "src/main/douyin-session.ts": [
+                  "persist:douyin-login",
+                  "openDouyinLoginWindow",
+                  "getDouyinCookie"
+              ],
+              "src/preload/index.ts": [
+                  "loginDouyin",
+                  "getDouyinLoginStatus"
+              ],
+              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx": [
+                  "handleDouyinLogin",
+                  "douyinLoggedIn"
+              ]
+          }
+
+          for file, needles in checks.items():
+              body = read(file)
+              for needle in needles:
+                  if needle not in body:
+                      raise RuntimeError(f"Sanity check failed: {needle} missing from {file}")
+
+          douyin_source = read("src/main/crawler/plugins/douyin.js")
+
+          if "'cookie:', cookie" in douyin_source:
+              raise RuntimeError("Douyin cookie is still present in debug logging")
+
+          print("")
+          print("All source patches completed successfully.")
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package Windows x64
+        run: npx electron-builder --win nsis --x64
+
+      - name: Check installer
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path "dist" -Filter "*-x64.exe"
+
+          if ($files.Count -eq 0) {
+            throw "Windows x64 installer was not generated."
+          }
+
+          $files | Select-Object Name, Length, FullName
+
+      - name: Commit tested changes to test branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            src/const.ts \
+            src/main/index.ts \
+            src/main/douyin-session.ts \
+            src/main/crawler/capture-error.js \
+            src/main/crawler/plugins/douyin.js \
+            src/preload/index.ts \
+            src/preload/index.d.ts \
+            src/renderer/src/App.tsx \
+            src/renderer/src/components/NavBar/NavBar.tsx \
+            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx \
+            src/renderer/src/locales/locales.js
+
+          git commit -m "Add safe Douyin login and automatic session cookie"
+
+          git push --force origin douyin-login-test
+
+      - name: Upload Windows x64 test installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-douyin-login-windows-x64
+          path: dist/*-x64.exe
+          if-no-files-found: error
+          retention-days: 7
