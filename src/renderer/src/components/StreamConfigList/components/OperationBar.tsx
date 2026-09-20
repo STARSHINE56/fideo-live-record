@@ -227,6 +227,17 @@ export default function OperationBar(
         result.liveUrls.length >
           0
       ) {
+        await updateStreamConfig(
+          {
+            ...latest,
+
+            status:
+              StreamStatus.MONITORING_LIVE
+          },
+
+          streamConfig.id
+        )
+
         if (
           !liveNotifiedRef.current
         ) {
@@ -293,6 +304,17 @@ export default function OperationBar(
         liveNotifiedRef.current =
           false
 
+        await updateStreamConfig(
+          {
+            ...latest,
+
+            status:
+              StreamStatus.MONITORING_OFFLINE
+          },
+
+          streamConfig.id
+        )
+
         scheduleMonitorOnly()
 
         return
@@ -302,10 +324,36 @@ export default function OperationBar(
         result.code ===
         UNKNOWN_CODE
       ) {
+        await updateStreamConfig(
+          {
+            ...latest,
+
+            status:
+              StreamStatus.MONITORING_ERROR
+          },
+
+          streamConfig.id
+        )
+
         scheduleMonitorOnly()
 
         return
       }
+      const monitoringOtherErrorStatus =
+        StreamStatus.MONITORING_ERROR
+
+      await updateStreamConfig(
+        {
+          ...latest,
+
+          status:
+            monitoringOtherErrorStatus
+        },
+
+        streamConfig.id
+      )
+
+
 
       if (isFirst) {
         const errMessage =
@@ -493,7 +541,10 @@ export default function OperationBar(
             ...streamConfig,
 
             status:
-              StreamStatus.MONITORING
+              code ===
+                CRAWLER_ERROR_CODE.NOT_URLS
+                ? StreamStatus.MONITORING_OFFLINE
+                : StreamStatus.MONITORING_ERROR
           },
 
           streamConfig.id

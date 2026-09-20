@@ -6,7 +6,10 @@ export enum StreamStatus {
   PREPARING_TO_RECORD = 1,
   MONITORING = 2,
   RECORDING = 3,
-  VIDEO_FORMAT_CONVERSION = 4
+  VIDEO_FORMAT_CONVERSION = 4,
+  MONITORING_OFFLINE = 5,
+  MONITORING_LIVE = 6,
+  MONITORING_ERROR = 7
 }
 
 export function cn(...inputs: ClassValue[]): string {

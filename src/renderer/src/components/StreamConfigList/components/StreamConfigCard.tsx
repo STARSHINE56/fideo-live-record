@@ -19,7 +19,10 @@ const streamStatusToLocaleMap = {
   1: 'stream_config.preparing_to_record',
   2: 'stream_config.monitoring',
   3: 'stream_config.recording',
-  4: 'stream_config.video_format_conversion'
+  4: 'stream_config.video_format_conversion',
+  5: 'stream_config.monitoring_offline',
+  6: 'stream_config.monitoring_live',
+  7: 'stream_config.monitoring_error'
 }
 
 export default function StreamConfigCard({ streamConfig }: StreamConfigCardProps) {

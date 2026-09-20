@@ -35,7 +35,29 @@ export default function StreamConfigList() {
       return streamConfigList.map((stream) => stream.id)
     }
     return streamConfigList
-      .filter((streamConfig) => streamConfig.status === Number(navSelectedStatus))
+      .filter((streamConfig) => {
+        const selectedStatus =
+          Number(navSelectedStatus)
+
+        if (
+          selectedStatus ===
+          StreamStatus.MONITORING
+        ) {
+          return [
+            StreamStatus.MONITORING,
+            StreamStatus.MONITORING_OFFLINE,
+            StreamStatus.MONITORING_LIVE,
+            StreamStatus.MONITORING_ERROR
+          ].includes(
+            streamConfig.status
+          )
+        }
+
+        return (
+          streamConfig.status ===
+          selectedStatus
+        )
+      })
       .map((stream) => stream.id)
   }, [streamConfigList, navSelectedStatus])
 
@@ -78,8 +100,18 @@ export default function StreamConfigList() {
       // 用户在获取直播地址时点击停止录制或者在监控中点击停止录制
       if (
         isStopByUser &&
-        (streamConfig.status === StreamStatus.PREPARING_TO_RECORD ||
-          streamConfig.status === StreamStatus.MONITORING)
+        (
+          streamConfig.status ===
+            StreamStatus.PREPARING_TO_RECORD ||
+          streamConfig.status ===
+            StreamStatus.MONITORING ||
+          streamConfig.status ===
+            StreamStatus.MONITORING_OFFLINE ||
+          streamConfig.status ===
+            StreamStatus.MONITORING_LIVE ||
+          streamConfig.status ===
+            StreamStatus.MONITORING_ERROR
+        )
       ) {
         await updateStreamConfig(
           { ...streamConfig, status: StreamStatus.NOT_STARTED },
