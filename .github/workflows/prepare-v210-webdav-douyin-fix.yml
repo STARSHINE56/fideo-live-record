@@ -1,4 +1,4 @@
-name: Prepare V2.10 WebDAV and Douyin Fix V2
+name: Prepare V2.10 WebDAV Douyin Fix V3
 
 on:
   workflow_dispatch:
@@ -7,18 +7,18 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-v210-webdav-douyin-fix-v2
+  group: prepare-v210-webdav-douyin-fix-v3
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v2
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v3
 
 jobs:
   prepare:
-    name: Prepare V2.10 V2
+    name: Prepare V2.10 V3
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Checkout tested source
@@ -46,117 +46,65 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKUP_BRANCH="backup-v210-v2-${GITHUB_RUN_NUMBER}"
+          BACKUP_BRANCH="backup-v210-v3-${GITHUB_RUN_ID}"
 
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
 
-          echo "Backup branch: $BACKUP_BRANCH"
+          echo "Backup: $BACKUP_BRANCH"
 
       - name: Create feature branch
         shell: bash
         run: |
           set -euo pipefail
 
-          git checkout -B \
-            "$FEATURE_BRANCH" \
-            "$SOURCE_BRANCH"
+          git checkout -B "$FEATURE_BRANCH" "$SOURCE_BRANCH"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply V2.10 changes
+      - name: Apply V2.10 V3 patch
         shell: bash
         run: |
           set -euo pipefail
 
-          cat > /tmp/v210_fix.py <<'PY'
+          cat > /tmp/v210_v3.py <<'PY'
           from pathlib import Path
           import re
 
 
           def read(path):
-              return Path(path).read_text(
-                  encoding="utf-8"
-              )
+              return Path(path).read_text(encoding="utf-8")
 
 
-          def write(path, content):
+          def write(path, text):
               p = Path(path)
-              p.parent.mkdir(
-                  parents=True,
-                  exist_ok=True
-              )
-              p.write_text(
-                  content,
-                  encoding="utf-8"
-              )
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(text, encoding="utf-8")
 
 
-          def replace_required(
-              path,
-              old,
-              new
-          ):
+          def replace_once(path, old, new):
               text = read(path)
 
               if new in text:
-                  print(
-                      f"Already patched: {path}"
-                  )
+                  print("Already patched:", path)
                   return
 
               if old not in text:
                   raise RuntimeError(
-                      f"Marker not found: {path}"
+                      "Marker not found in: " + path
                   )
 
               write(
                   path,
-                  text.replace(
-                      old,
-                      new,
-                      1
-                  )
+                  text.replace(old, new, 1)
               )
 
-              print(
-                  f"Patched: {path}"
-              )
-
-
-          def regex_replace_required(
-              path,
-              pattern,
-              replacement
-          ):
-              text = read(path)
-
-              new_text, count = re.subn(
-                  pattern,
-                  replacement,
-                  text,
-                  count=1,
-                  flags=re.S
-              )
-
-              if count != 1:
-                  raise RuntimeError(
-                      f"Regex marker not found: {path}"
-                  )
-
-              write(
-                  path,
-                  new_text
-              )
-
-              print(
-                  f"Patched: {path}"
-              )
+              print("Patched:", path)
 
 
           # ============================================================
-          # 1. Rewrite type.d.ts completely
+          # type.d.ts
           # ============================================================
 
           write(
@@ -229,29 +177,23 @@ jobs:
           """
           )
 
-          # remove indentation from generated file
-          type_path = Path(
-              "type.d.ts"
-          )
+          p = Path("type.d.ts")
 
-          lines = type_path.read_text(
-              encoding="utf-8"
-          ).splitlines()
-
-          type_path.write_text(
+          p.write_text(
               "\n".join(
                   line[10:]
-                  if line.startswith(
-                      "          "
-                  )
+                  if line.startswith("          ")
                   else line
-                  for line in lines
+                  for line in p.read_text(
+                      encoding="utf-8"
+                  ).splitlines()
               ) + "\n",
               encoding="utf-8"
           )
 
+
           # ============================================================
-          # 2. Main WebDAV implementation
+          # WebDAV implementation
           # ============================================================
 
           write(
@@ -281,22 +223,23 @@ jobs:
             retryTimes?: number
           }
 
-          const authHeader = (
+          const authorization = (
             username: string,
             password: string
           ) =>
             `Basic ${Buffer.from(
-              `${username}:${password}`
+              `${username}:${password}`,
+              'utf8'
             ).toString('base64')}`
 
-          const cleanBase = (
+          const cleanBaseUrl = (
             value: string
           ) =>
             value
               .trim()
               .replace(/\\/+$/, '')
 
-          const pathParts = (
+          const splitRemotePath = (
             value?: string
           ) =>
             (value || '/')
@@ -324,22 +267,18 @@ jobs:
                 )
                 .trim()
 
-            return (
-              result ||
-              '主播'
-            )
+            return result || '主播'
           }
 
-          const remoteUrl = (
+          const makeRemoteUrl = (
             base: string,
             segments: string[]
           ) => {
             const root =
-              cleanBase(base)
+              cleanBaseUrl(base)
 
             if (
-              segments.length ===
-              0
+              segments.length === 0
             ) {
               return `${root}/`
             }
@@ -357,13 +296,13 @@ jobs:
             )
           }
 
-          const ok = (
-            status: number
+          const successStatus = (
+            value: number
           ) =>
-            status >= 200 &&
-            status < 300
+            value >= 200 &&
+            value < 300
 
-          async function ensureFolder(
+          async function ensureFolders(
             config: IWebdavConfig,
             segments: string[]
           ) {
@@ -371,11 +310,11 @@ jobs:
               string[] = []
 
             for (
-              const part of
+              const segment of
               segments
             ) {
               current.push(
-                part
+                segment
               )
 
               const response =
@@ -384,14 +323,14 @@ jobs:
                     'MKCOL',
 
                   url:
-                    remoteUrl(
+                    makeRemoteUrl(
                       config.url,
                       current
                     ),
 
                   headers: {
                     Authorization:
-                      authHeader(
+                      authorization(
                         config.username,
                         config.password
                       )
@@ -419,18 +358,18 @@ jobs:
             }
           }
 
-          async function remoteSize(
+          async function getRemoteSize(
             config: IWebdavConfig,
             segments: string[]
-          ) {
+          ): Promise<number> {
             const url =
-              remoteUrl(
+              makeRemoteUrl(
                 config.url,
                 segments
               )
 
-            const authorization =
-              authHeader(
+            const auth =
+              authorization(
                 config.username,
                 config.password
               )
@@ -441,7 +380,7 @@ jobs:
                 {
                   headers: {
                     Authorization:
-                      authorization
+                      auth
                   },
 
                   validateStatus:
@@ -450,11 +389,11 @@ jobs:
               )
 
             if (
-              ok(
+              successStatus(
                 head.status
               )
             ) {
-              const size =
+              const value =
                 Number(
                   head.headers[
                     'content-length'
@@ -463,14 +402,15 @@ jobs:
 
               if (
                 Number.isFinite(
-                  size
-                )
+                  value
+                ) &&
+                value >= 0
               ) {
-                return size
+                return value
               }
             }
 
-            const result =
+            const response =
               await axios.request({
                 method:
                   'PROPFIND',
@@ -479,7 +419,7 @@ jobs:
 
                 headers: {
                   Authorization:
-                    authorization,
+                    auth,
 
                   Depth:
                     '0'
@@ -493,10 +433,10 @@ jobs:
               })
 
             if (
-              result.status !==
+              response.status !==
                 207 &&
-              !ok(
-                result.status
+              !successStatus(
+                response.status
               )
             ) {
               return -1
@@ -504,7 +444,7 @@ jobs:
 
             const body =
               String(
-                result.data ||
+                response.data ||
                 ''
               )
 
@@ -527,7 +467,7 @@ jobs:
           ) {
             const response =
               await axios.put(
-                remoteUrl(
+                makeRemoteUrl(
                   config.url,
                   segments
                 ),
@@ -537,7 +477,7 @@ jobs:
                 {
                   headers: {
                     Authorization:
-                      authHeader(
+                      authorization(
                         config.username,
                         config.password
                       ),
@@ -561,7 +501,7 @@ jobs:
               )
 
             if (
-              !ok(
+              !successStatus(
                 response.status
               )
             ) {
@@ -577,22 +517,21 @@ jobs:
             segments: string[]
           ) {
             const stat =
-              await fs.promises
-                .stat(
-                  localPath
-                )
+              await fs.promises.stat(
+                localPath
+              )
 
             if (
               !stat.isFile()
             ) {
               throw new Error(
-                '录像文件无效'
+                '录像文件不存在或无效'
               )
             }
 
             const response =
               await axios.put(
-                remoteUrl(
+                makeRemoteUrl(
                   config.url,
                   segments
                 ),
@@ -604,7 +543,7 @@ jobs:
                 {
                   headers: {
                     Authorization:
-                      authHeader(
+                      authorization(
                         config.username,
                         config.password
                       ),
@@ -628,7 +567,7 @@ jobs:
               )
 
             if (
-              !ok(
+              !successStatus(
                 response.status
               )
             ) {
@@ -637,18 +576,18 @@ jobs:
               )
             }
 
-            const size =
-              await remoteSize(
+            const remoteSize =
+              await getRemoteSize(
                 config,
                 segments
               )
 
             if (
-              size !==
+              remoteSize !==
               stat.size
             ) {
               throw new Error(
-                `云端校验失败 本地 ${stat.size} 云端 ${size}`
+                `云端文件大小校验失败，本地 ${stat.size}，云端 ${remoteSize}`
               )
             }
           }
@@ -667,43 +606,44 @@ jobs:
                     false,
 
                   message:
-                    '请填写 WebDAV 地址、用户名和密码'
+                    'WebDAV 地址、用户名和密码不能为空'
                 }
               }
 
               const root =
-                pathParts(
+                splitRemotePath(
                   config.remoteRoot
                 )
 
-              await ensureFolder(
+              await ensureFolders(
                 config,
                 root
               )
 
-              const filename =
+              const name =
                 `.fideo-test-${Date.now()}.txt`
 
-              const parts = [
+              const remote = [
                 ...root,
-                filename
+                name
               ]
 
               const data =
                 Buffer.from(
-                  'Fideo WebDAV Test'
+                  'Fideo WebDAV Test',
+                  'utf8'
                 )
 
               await uploadBuffer(
                 config,
-                parts,
+                remote,
                 data
               )
 
               const size =
-                await remoteSize(
+                await getRemoteSize(
                   config,
-                  parts
+                  remote
                 )
 
               if (
@@ -715,17 +655,17 @@ jobs:
                 )
               }
 
-              const deleteResult =
+              const response =
                 await axios.delete(
-                  remoteUrl(
+                  makeRemoteUrl(
                     config.url,
-                    parts
+                    remote
                   ),
 
                   {
                     headers: {
                       Authorization:
-                        authHeader(
+                        authorization(
                           config.username,
                           config.password
                         )
@@ -737,14 +677,14 @@ jobs:
                 )
 
               if (
-                !ok(
-                  deleteResult.status
+                !successStatus(
+                  response.status
                 ) &&
-                deleteResult.status !==
+                response.status !==
                   404
               ) {
                 throw new Error(
-                  `测试文件删除失败 HTTP ${deleteResult.status}`
+                  `测试文件删除失败 HTTP ${response.status}`
                 )
               }
 
@@ -753,7 +693,7 @@ jobs:
                   true,
 
                 message:
-                  'WebDAV 上传测试成功'
+                  '连接、上传、校验和删除测试成功'
               }
             } catch (
               error
@@ -792,7 +732,7 @@ jobs:
             }
 
             const folder = [
-              ...pathParts(
+              ...splitRemotePath(
                 request.remoteRoot
               ),
 
@@ -801,12 +741,12 @@ jobs:
               )
             ]
 
-            await ensureFolder(
+            await ensureFolders(
               config,
               folder
             )
 
-            const retries =
+            const retryTimes =
               Math.max(
                 1,
                 Math.min(
@@ -818,7 +758,14 @@ jobs:
                 )
               )
 
-            const results = []
+            const results:
+              Array<{
+                path: string
+                cloudName: string
+                success: boolean
+                deleted: boolean
+                message?: string
+              }> = []
 
             for (
               const file of
@@ -832,11 +779,11 @@ jobs:
 
               for (
                 let attempt = 1;
-                attempt <= retries;
+                attempt <= retryTimes;
                 attempt += 1
               ) {
                 try {
-                  const ext =
+                  const extension =
                     path.extname(
                       file.path
                     )
@@ -846,7 +793,7 @@ jobs:
                       file.cloudName
                     )
                       ? file.cloudName
-                      : `${file.cloudName}${ext}`
+                      : `${file.cloudName}${extension}`
 
                   await uploadFile(
                     config,
@@ -864,10 +811,9 @@ jobs:
                     request
                       .deleteAfterUpload
                   ) {
-                    await fs.promises
-                      .unlink(
-                        file.path
-                      )
+                    await fs.promises.unlink(
+                      file.path
+                    )
 
                     deleted =
                       true
@@ -901,7 +847,7 @@ jobs:
 
                   if (
                     attempt <
-                    retries
+                    retryTimes
                   ) {
                     await new Promise(
                       resolve =>
@@ -952,43 +898,35 @@ jobs:
           """
           )
 
-          webdav_path = Path(
+          p = Path(
               "src/main/webdav.ts"
           )
 
-          lines = webdav_path.read_text(
-              encoding="utf-8"
-          ).splitlines()
-
-          webdav_path.write_text(
+          p.write_text(
               "\n".join(
                   line[10:]
-                  if line.startswith(
-                      "          "
-                  )
+                  if line.startswith("          ")
                   else line
-                  for line in lines
+                  for line in p.read_text(
+                      encoding="utf-8"
+                  ).splitlines()
               ) + "\n",
               encoding="utf-8"
           )
 
+
           # ============================================================
-          # 3. Constants
+          # Constants
           # ============================================================
 
-          const_path = (
-              "src/const.ts"
+          const_path = "src/const.ts"
+          const_text = read(
+              const_path
           )
-
-          const_text =
-              read(
-                const_path
-              )
 
           if (
               "TEST_WEBDAV"
-              not in
-              const_text
+              not in const_text
           ):
               const_text += (
                   "\n"
@@ -1001,8 +939,9 @@ jobs:
                   const_text
               )
 
+
           # ============================================================
-          # 4. Default settings store
+          # Default settings store
           # ============================================================
 
           write(
@@ -1060,12 +999,16 @@ jobs:
                           'defaultSettingsConfig'
                         )
 
-                    set(() => ({
-                      defaultSettingsConfig: {
-                        ...DEFAULT_SETTINGS,
-                        ...(saved || {})
-                      }
-                    }))
+                    if (
+                      saved
+                    ) {
+                      set(() => ({
+                        defaultSettingsConfig: {
+                          ...DEFAULT_SETTINGS,
+                          ...saved
+                        }
+                      }))
+                    }
                   },
 
                 setDefaultSettingsConfig:
@@ -1076,11 +1019,10 @@ jobs:
                         ...config
                       }
 
-                      void localForage
-                        .setItem(
-                          'defaultSettingsConfig',
-                          next
-                        )
+                      void localForage.setItem(
+                        'defaultSettingsConfig',
+                        next
+                      )
 
                       return {
                         defaultSettingsConfig:
@@ -1092,28 +1034,25 @@ jobs:
           """
           )
 
-          store_path = Path(
+          p = Path(
               "src/renderer/src/store/useDefaultSettingsStore.ts"
           )
 
-          lines = store_path.read_text(
-              encoding="utf-8"
-          ).splitlines()
-
-          store_path.write_text(
+          p.write_text(
               "\n".join(
                   line[10:]
-                  if line.startswith(
-                      "          "
-                  )
+                  if line.startswith("          ")
                   else line
-                  for line in lines
+                  for line in p.read_text(
+                      encoding="utf-8"
+                  ).splitlines()
               ) + "\n",
               encoding="utf-8"
           )
 
+
           # ============================================================
-          # 5. Cloud UI
+          # Cloud settings component
           # ============================================================
 
           write(
@@ -1149,14 +1088,14 @@ jobs:
                 )
               )
 
-            const deleteAfterUpload =
+            const deleteLocal =
               Boolean(
                 form.watch(
                   'webdavDeleteAfterUpload'
                 )
               )
 
-            const handleTest =
+            const testConnection =
               async () => {
                 const url =
                   String(
@@ -1201,7 +1140,7 @@ jobs:
                       'WebDAV 测试失败',
 
                     description:
-                      '请先填写 WebDAV 地址、用户名和密码',
+                      '请填写地址、用户名和密码',
 
                     variant:
                       'destructive'
@@ -1238,6 +1177,23 @@ jobs:
                         ? undefined
                         : 'destructive'
                   })
+                } catch (
+                  error
+                ) {
+                  toast({
+                    title:
+                      'WebDAV 测试失败',
+
+                    description:
+                      error instanceof Error
+                        ? error.message
+                        : String(
+                            error
+                          ),
+
+                    variant:
+                      'destructive'
+                  })
                 } finally {
                   setTesting(
                     false
@@ -1254,7 +1210,7 @@ jobs:
                     </FormLabel>
 
                     <div className="mt-1 text-xs text-muted-foreground">
-                      按主播名称自动创建文件夹
+                      录像结束后按主播名称自动分类上传
                     </div>
                   </div>
 
@@ -1372,6 +1328,10 @@ jobs:
                         }
                         placeholder="/"
                       />
+
+                      <div className="text-xs text-muted-foreground">
+                        小蓝云盘已经绑定“抖音直播录制”目录时保持 / 即可
+                      </div>
                     </div>
 
                     <div className="flex items-center justify-between gap-4">
@@ -1381,13 +1341,13 @@ jobs:
                         </FormLabel>
 
                         <div className="mt-1 text-xs text-muted-foreground">
-                          云端文件大小确认一致后才删除
+                          只有云端文件大小验证正确以后才删除
                         </div>
                       </div>
 
                       <Switch
                         checked={
-                          deleteAfterUpload
+                          deleteLocal
                         }
                         onCheckedChange={(
                           value
@@ -1402,7 +1362,7 @@ jobs:
 
                     <div className="space-y-1">
                       <FormLabel>
-                        失败重试次数
+                        上传失败重试次数
                       </FormLabel>
 
                       <Input
@@ -1417,22 +1377,25 @@ jobs:
                         )}
                         onChange={(
                           event
-                        ) =>
+                        ) => {
+                          const value =
+                            Number(
+                              event.target
+                                .value
+                            ) ||
+                            3
+
                           form.setValue(
                             'webdavRetryTimes',
                             Math.max(
                               1,
                               Math.min(
                                 10,
-                                Number(
-                                  event.target
-                                    .value
-                                ) ||
-                                  3
+                                value
                               )
                             )
                           )
-                        }
+                        }}
                       />
                     </div>
 
@@ -1443,7 +1406,7 @@ jobs:
                         testing
                       }
                       onClick={
-                        handleTest
+                        testConnection
                       }
                     >
                       {testing
@@ -1458,58 +1421,72 @@ jobs:
           """
           )
 
-          cloud_path = Path(
+          p = Path(
               "src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx"
           )
 
-          lines = cloud_path.read_text(
-              encoding="utf-8"
-          ).splitlines()
-
-          cloud_path.write_text(
+          p.write_text(
               "\n".join(
                   line[10:]
-                  if line.startswith(
-                      "          "
-                  )
+                  if line.startswith("          ")
                   else line
-                  for line in lines
+                  for line in p.read_text(
+                      encoding="utf-8"
+                  ).splitlines()
               ) + "\n",
               encoding="utf-8"
           )
 
+
           # ============================================================
-          # 6. Default settings page
+          # Default settings page
           # ============================================================
 
-          settings_file = (
+          settings_path = (
               "src/renderer/src/components/NavBar/components/"
               "DefaultSettingSheet.tsx"
           )
 
           settings = read(
-              settings_file
+              settings_path
           )
 
           if (
               "CloudStorageSettings"
-              not in
-              settings
+              not in settings
           ):
-              settings = settings.replace(
-                  "import { testXizhiPushNotification } from '@renderer/lib/utils'",
+              replace_once(
+                  settings_path,
+
+                  "import { testXizhiPushNotification } from '@renderer/lib/utils'\n",
+
                   "import { testXizhiPushNotification } from '@renderer/lib/utils'\n"
-                  "import CloudStorageSettings from './CloudStorageSettings'"
+                  "import CloudStorageSettings from './CloudStorageSettings'\n"
+              )
+
+              settings = read(
+                  settings_path
               )
 
           if (
               "webdavEnabled"
-              not in
-              settings
+              not in settings
           ):
-              settings = settings.replace(
-                  "  logsDir: z.optional(z.string())\n})",
-                  """  logsDir: z.optional(z.string()),
+              replace_once(
+                  settings_path,
+
+                  """const formSchema = z.object({
+            directory: z.string(),
+            lang: z.string(),
+            xizhiKey: z.optional(z.string()),
+            logsDir: z.optional(z.string())
+          })""",
+
+                  """const formSchema = z.object({
+            directory: z.string(),
+            lang: z.string(),
+            xizhiKey: z.optional(z.string()),
+            logsDir: z.optional(z.string()),
             webdavEnabled: z.optional(z.boolean()),
             webdavUrl: z.optional(z.string()),
             webdavUsername: z.optional(z.string()),
@@ -1520,49 +1497,63 @@ jobs:
           })"""
               )
 
-          if (
-              "<CloudStorageSettings"
-              not in
-              settings
-          ):
-              settings = settings.replace(
-                  """                <FormField
-                    control={form.control}
-                    name="logsDir\"""",
-                  """                <CloudStorageSettings form={form} />
-
-                          <FormField
-                    control={form.control}
-                    name="logsDir\""""
+              settings = read(
+                  settings_path
               )
 
-          write(
-              settings_file,
-              settings
-          )
+          if (
+              "<CloudStorageSettings"
+              not in settings
+          ):
+              marker = """                <FormField
+                    control={form.control}
+                    name="logsDir"
+          """
+
+              insert = """                <CloudStorageSettings
+                    form={form}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="logsDir"
+          """
+
+              if (
+                  marker not in
+                  settings
+              ):
+                  raise RuntimeError(
+                      "Default settings logsDir marker not found"
+                  )
+
+              write(
+                  settings_path,
+                  settings.replace(
+                      marker,
+                      insert,
+                      1
+                  )
+              )
+
 
           # ============================================================
-          # 7. Xizhi: always push
+          # Xizhi always send
           # ============================================================
 
-          utils_file = (
-              "src/renderer/src/lib/utils.ts"
-          )
+          replace_once(
+              "src/renderer/src/lib/utils.ts",
 
-          utils = read(
-              utils_file
-          )
-
-          regex_replace_required(
-              utils_file,
-
-              r"""export function useXizhiToPushNotification\(
-          options: \{
+              """export function useXizhiToPushNotification(options: {
             key: string
             title: string
-            content\?: string
-          \}
-          \) \{.*?\n\}""",
+            content?: string
+          }) {
+            const isHide = document.hidden
+            if (!isHide) return
+            const titleAndContent = options.content ? `${options.title} - ${options.content}` : options.title
+            fetch(`${options.key}?title=${encodeURIComponent(titleAndContent)}`)
+          }""",
 
               """export function useXizhiToPushNotification(options: {
             key: string
@@ -1596,33 +1587,40 @@ jobs:
           }"""
           )
 
+
           # ============================================================
-          # 8. Preload IPC
+          # Preload
           # ============================================================
 
-          preload_file = (
+          preload_path = (
               "src/preload/index.ts"
           )
 
-          preload = read(
-              preload_file
+          replace_once(
+              preload_path,
+
+              """  DOUYIN_LOGIN_STATUS
+          } from '../const'""",
+
+              """  DOUYIN_LOGIN_STATUS,
+            TEST_WEBDAV,
+            UPLOAD_WEBDAV
+          } from '../const'"""
           )
 
-          preload = preload.replace(
-              "  DOUYIN_LOGIN_STATUS\n} from '../const'",
-              "  DOUYIN_LOGIN_STATUS,\n"
-              "  TEST_WEBDAV,\n"
-              "  UPLOAD_WEBDAV\n"
-              "} from '../const'"
+          preload = read(
+              preload_path
           )
 
           if (
               "testWebdav:"
-              not in
-              preload
+              not in preload
           ):
-              preload = preload.replace(
-                  "  startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),",
+              replace_once(
+                  preload_path,
+
+                  """  startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),""",
+
                   """  testWebdav: (config: {
               url: string
               username: string
@@ -1652,69 +1650,65 @@ jobs:
             startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),"""
               )
 
-          preload = re.sub(
-              r"""onStreamRecordEnd:\s*\(callback: \(title: string, code: number, errMsg\?: string\) => void\) => \{
-          \s*ipcRenderer\.on\(STREAM_RECORD_END, \(_, title, code, errMsg\) => \{
-          \s*callback\(title, code, errMsg\)
-          \s*\}\)
-          \s*\},""",
+          replace_once(
+              preload_path,
 
-              """onStreamRecordEnd: (
-              callback: (
-                title: string,
-                code: number,
-                errMsg?: string,
-                files?: IRecordedFile[]
-              ) => void
-            ) => {
-              ipcRenderer.on(
-                STREAM_RECORD_END,
-                (
-                  _,
+              """  onStreamRecordEnd: (callback: (title: string, code: number, errMsg?: string) => void) => {
+            ipcRenderer.on(STREAM_RECORD_END, (_, title, code, errMsg) => {
+              callback(title, code, errMsg)
+            })
+          },""",
+
+              """  onStreamRecordEnd: (
+            callback: (
+              title: string,
+              code: number,
+              errMsg?: string,
+              files?: IRecordedFile[]
+            ) => void
+          ) => {
+            ipcRenderer.on(
+              STREAM_RECORD_END,
+              (
+                _,
+                title,
+                code,
+                errMsg,
+                files
+              ) => {
+                callback(
                   title,
                   code,
                   errMsg,
                   files
-                ) => {
-                  callback(
-                    title,
-                    code,
-                    errMsg,
-                    files
-                  )
-                }
-              )
-            },""",
-
-              preload,
-              count=1,
-              flags=re.S
+                )
+              }
+            )
+          },"""
           )
 
-          write(
-              preload_file,
-              preload
-          )
 
           # ============================================================
-          # 9. Preload declaration
+          # Preload d.ts
           # ============================================================
 
-          preload_dts_file = (
+          preload_dts = (
               "src/preload/index.d.ts"
           )
 
-          preload_dts = read(
-              preload_dts_file
+          text = read(
+              preload_dts
           )
 
           if (
               "testWebdav:"
-              not in
-              preload_dts
+              not in text
           ):
-              preload_dts = preload_dts.replace(
+              replace_once(
+                  preload_dts,
+
                   """      startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>""",
+
                   """      testWebdav: (config: {
                 url: string
                 username: string
@@ -1748,8 +1742,11 @@ jobs:
               startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>"""
               )
 
-          preload_dts = preload_dts.replace(
+          replace_once(
+              preload_dts,
+
               """      onStreamRecordEnd: (callback: (id: string, code: number, errMsg?: string) => void) => void""",
+
               """      onStreamRecordEnd: (
                 callback: (
                   id: string,
@@ -1760,54 +1757,67 @@ jobs:
               ) => void"""
           )
 
-          write(
-              preload_dts_file,
-              preload_dts
-          )
 
           # ============================================================
-          # 10. Main process IPC
+          # Main process
           # ============================================================
 
-          main_file = (
+          main_path = (
               "src/main/index.ts"
           )
 
-          main = read(
-              main_file
+          replace_once(
+              main_path,
+
+              """  DOUYIN_LOGIN_STATUS
+          } from '../const'""",
+
+              """  DOUYIN_LOGIN_STATUS,
+            TEST_WEBDAV,
+            UPLOAD_WEBDAV
+          } from '../const'"""
           )
 
-          main = main.replace(
-              "  DOUYIN_LOGIN_STATUS\n} from '../const'",
-              "  DOUYIN_LOGIN_STATUS,\n"
-              "  TEST_WEBDAV,\n"
-              "  UPLOAD_WEBDAV\n"
-              "} from '../const'"
+          main = read(
+              main_path
           )
 
           if (
               "from './webdav'"
-              not in
-              main
+              not in main
           ):
-              main = main.replace(
-                  "} from './douyin-session'",
-                  "} from './douyin-session'\n\n"
-                  "import {\n"
-                  "  testWebdav,\n"
-                  "  uploadWebdav\n"
-                  "} from './webdav'"
+              replace_once(
+                  main_path,
+
+                  """} from './douyin-session'
+
+          export const writeLog =""",
+
+                  """} from './douyin-session'
+
+          import {
+            testWebdav,
+            uploadWebdav
+          } from './webdav'
+
+          export const writeLog ="""
               )
+
+          main = read(
+              main_path
+          )
 
           if (
               "ipcMain.handle(\n    TEST_WEBDAV"
-              not in
-              main
+              not in main
           ):
-              main = main.replace(
+              replace_once(
+                  main_path,
+
                   """  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
             shell.openExternal(url)
           })""",
+
                   """  ipcMain.handle(
             TEST_WEBDAV,
             async (_, config) => {
@@ -1831,9 +1841,14 @@ jobs:
           })"""
               )
 
-          main = main.replace(
+          replace_once(
+              main_path,
+
               """      (code: number, errMsg?: string) => {
-                win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)""",
+                win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)
+                clearTimerWhenAllFfmpegProcessEnd()
+              }""",
+
               """      (
                 code: number,
                 errMsg?: string,
@@ -1845,29 +1860,27 @@ jobs:
                   code,
                   errMsg,
                   files
-                )"""
+                )
+
+                clearTimerWhenAllFfmpegProcessEnd()
+              }"""
           )
 
-          write(
-              main_file,
-              main
-          )
 
           # ============================================================
-          # 11. Recording final file metadata
+          # Recording result files
           # ============================================================
 
-          record_file = (
+          record_path = (
               "src/main/ffmpeg/record.ts"
           )
 
-          record = read(
-              record_file
-          )
+          replace_once(
+              record_path,
 
-          record = record.replace(
               """  cb?: (code: number, errMsg?: string) => void
           ) {""",
+
               """  cb?: (
             code: number,
             errMsg?: string,
@@ -1876,9 +1889,12 @@ jobs:
           ) {"""
           )
 
-          record = record.replace(
+          replace_once(
+              record_path,
+
               """  const time = dayjs().format('YYYY.MM.DD-HH.mm.ss')
             const baseOutput = path.resolve(directory, `${filename}-${time}`)""",
+
               """  const now =
             dayjs()
 
@@ -1899,13 +1915,20 @@ jobs:
             )"""
           )
 
+          record = read(
+              record_path
+          )
+
           if (
-              "getCompletedRecordFiles"
-              not in
-              record
+              "function makeRecordedFiles"
+              not in record
           ):
-              helper = """
-          async function getCompletedRecordFiles(
+              marker = (
+                  "async function detectStreamResolution"
+                  "(streamConfig: IStreamConfig) {"
+              )
+
+              helper = """async function findCompletedRecordFiles(
             sourcePath: string
           ): Promise<string[]> {
             if (
@@ -1927,10 +1950,9 @@ jobs:
                   )
                   .filter(
                     file =>
-                      /\\.(mp4|flv)$/i
-                        .test(
-                          file
-                        )
+                      /\\.(mp4|flv)$/i.test(
+                        file
+                      )
                   )
                   .sort()
                   .map(
@@ -1943,7 +1965,7 @@ jobs:
               }
             }
 
-            const mp4Path =
+            const mp4 =
               sourcePath.replace(
                 /\\.flv$/i,
                 '.mp4'
@@ -1951,11 +1973,11 @@ jobs:
 
             if (
               await checkFileExist(
-                mp4Path
+                mp4
               )
             ) {
               return [
-                mp4Path
+                mp4
               ]
             }
 
@@ -1981,7 +2003,7 @@ jobs:
                 file,
                 index
               ) => {
-                const ext =
+                const extension =
                   path.extname(
                     file
                   )
@@ -2001,7 +2023,7 @@ jobs:
                     file,
 
                   cloudName:
-                    `${cloudTime}${suffix}${ext}`
+                    `${cloudTime}${suffix}${extension}`
                 }
               }
             )
@@ -2010,27 +2032,12 @@ jobs:
 
           """
 
-              helper = "\n".join(
-                  line[10:]
-                  if line.startswith(
-                      "          "
-                  )
-                  else line
-                  for line in
-                  helper.splitlines()
-              )
-
-              marker = (
-                  "async function detectStreamResolution"
-                  "(streamConfig: IStreamConfig) {"
-              )
-
               if (
                   marker not in
                   record
               ):
                   raise RuntimeError(
-                      "record.ts helper insertion failed"
+                      "record.ts insertion marker missing"
                   )
 
               record = record.replace(
@@ -2040,10 +2047,18 @@ jobs:
                   1
               )
 
-          record = record.replace(
+              write(
+                  record_path,
+                  record
+              )
+
+          replace_once(
+              record_path,
+
               """      cb?.(SUCCESS_CODE)
                 await convert(convertSource, writeLog.bind(null, title), convertToMP4)
                 cb?.(SUCCESS_CODE)""",
+
               """      cb?.(
                 SUCCESS_CODE
               )
@@ -2057,8 +2072,8 @@ jobs:
                 convertToMP4
               )
 
-              const files =
-                await getCompletedRecordFiles(
+              const finishedFiles =
+                await findCompletedRecordFiles(
                   convertSource
                 )
 
@@ -2066,16 +2081,19 @@ jobs:
                 SUCCESS_CODE,
                 undefined,
                 makeRecordedFiles(
-                  files,
+                  finishedFiles,
                   cloudTime
                 )
               )"""
           )
 
-          record = record.replace(
+          replace_once(
+              record_path,
+
               """      cb?.(errCode, errMsg)
                 await convert(convertSource, writeLog.bind(null, title), convertToMP4)
                 cb?.(errCode, errMsg)""",
+
               """      cb?.(
                 errCode,
                 errMsg
@@ -2090,8 +2108,8 @@ jobs:
                 convertToMP4
               )
 
-              const files =
-                await getCompletedRecordFiles(
+              const finishedFiles =
+                await findCompletedRecordFiles(
                   convertSource
                 )
 
@@ -2099,40 +2117,34 @@ jobs:
                 errCode,
                 errMsg,
                 makeRecordedFiles(
-                  files,
+                  finishedFiles,
                   cloudTime
                 )
               )"""
           )
 
-          write(
-              record_file,
-              record
-          )
 
           # ============================================================
-          # 12. Douyin profile request optimization
+          # Douyin profile optimization
           # ============================================================
 
-          douyin_file = (
+          douyin_path = (
               "src/main/crawler/plugins/douyin.js"
           )
 
           douyin = read(
-              douyin_file
+              douyin_path
           )
 
           if (
               "DOUYIN_PROFILE_CACHE_MS"
-              not in
-              douyin
+              not in douyin
           ):
               marker = (
                   "function buildDouyinProfileParams("
               )
 
-              cache = """
-          const DOUYIN_PROFILE_CACHE_MS =
+              cache = """const DOUYIN_PROFILE_CACHE_MS =
             45 * 1000
 
           const douyinProfileCache =
@@ -2141,15 +2153,13 @@ jobs:
 
           """
 
-              cache = "\n".join(
-                  line[10:]
-                  if line.startswith(
-                      "          "
+              if (
+                  marker not in
+                  douyin
+              ):
+                  raise RuntimeError(
+                      "Douyin cache insertion marker missing"
                   )
-                  else line
-                  for line in
-                  cache.splitlines()
-              )
 
               douyin = douyin.replace(
                   marker,
@@ -2158,7 +2168,7 @@ jobs:
                   1
               )
 
-          douyin = re.sub(
+          bootstrap_pattern = re.compile(
               r"""  let generatedCookies =
               ''
 
@@ -2185,30 +2195,35 @@ jobs:
             \]
               \.filter\(Boolean\)
               \.join\('; '\)""",
-
-              """  const finalCookie =
-            cookie ||
-            ''""",
-
-              douyin,
-              count=1,
-              flags=re.S
+              re.S
           )
 
           if (
-              "douyinProfileCache.get"
-              not in
-              douyin
+              bootstrap_pattern.search(
+                  douyin
+              )
           ):
-              douyin = douyin.replace(
-                  """  if (!secUid) {
+              douyin = bootstrap_pattern.sub(
+                  """  const finalCookie =
+            cookie ||
+            ''""",
+                  douyin,
+                  count=1
+              )
+
+          if (
+              "douyinProfileCache.get"
+              not in douyin
+          ):
+              old = """  if (!secUid) {
               throw new Error(
                 'DOUYIN_SEC_UID_EMPTY'
               )
             }
 
-            const profileUrl =""",
-                  """  if (!secUid) {
+            const profileUrl ="""
+
+              new = """  if (!secUid) {
               throw new Error(
                 'DOUYIN_SEC_UID_EMPTY'
               )
@@ -2229,22 +2244,33 @@ jobs:
             }
 
             const profileUrl ="""
+
+              if (
+                  old not in douyin
+              ):
+                  raise RuntimeError(
+                      "Douyin profile cache marker missing"
+                  )
+
+              douyin = douyin.replace(
+                  old,
+                  new,
+                  1
               )
 
           if (
               "douyinProfileCache.set"
-              not in
-              douyin
+              not in douyin
           ):
-              douyin = douyin.replace(
-                  """  return {
+              old = """  return {
               nickname,
               live,
               webRid,
               secUid
             }
-          }""",
-                  """  const profile = {
+          }"""
+
+              new = """  const profile = {
               nickname,
               live,
               webRid,
@@ -2263,46 +2289,50 @@ jobs:
 
             return profile
           }"""
+
+              if (
+                  old not in douyin
+              ):
+                  raise RuntimeError(
+                      "Douyin profile result marker missing"
+                  )
+
+              douyin = douyin.replace(
+                  old,
+                  new,
+                  1
               )
 
           write(
-              douyin_file,
+              douyin_path,
               douyin
           )
 
+
           # ============================================================
-          # 13. Monitor interval/backoff
+          # OperationBar: minimum 60 sec for profile URL
           # ============================================================
 
-          operation_file = (
-              "src/renderer/src/components/StreamConfigList/components/"
+          operation_path = (
+              "src/renderer/src/components/"
+              "StreamConfigList/components/"
               "OperationBar.tsx"
           )
 
           operation = read(
-              operation_file
+              operation_path
           )
 
           if (
-              "monitorErrorStreakRef"
-              not in
-              operation
+              "effectiveMonitorInterval"
+              not in operation
           ):
-              operation = operation.replace(
-                  """  const liveNotifiedRef =
-            useRef(false)
-
-          const {
+              old = """  const {
             streamConfig
           } =
-            props""",
-                  """  const liveNotifiedRef =
-            useRef(false)
+            props"""
 
-          const monitorErrorStreakRef =
-            useRef(0)
-
-          const {
+              new = """  const {
             streamConfig
           } =
             props
@@ -2312,373 +2342,126 @@ jobs:
               streamConfig.roomUrl
             )
 
-          const getMonitorDelay =
-            (
-              error =
-                false
-            ) => {
-              const configured =
-                Math.max(
-                  20,
+          const effectiveMonitorInterval =
+            isDouyinProfile
+              ? Math.max(
+                  60,
                   Number(
                     streamConfig.interval
                   ) ||
-                    30
+                    60
                 )
-
-              const base =
-                isDouyinProfile
-                  ? Math.max(
-                      60,
-                      configured
-                    )
-                  : configured
+              : streamConfig.interval"""
 
               if (
-                !error ||
-                !isDouyinProfile
-              ) {
-                return (
-                  base *
-                  1000
-                )
-              }
-
-              const factor =
-                Math.pow(
-                  2,
-                  Math.min(
-                    monitorErrorStreakRef
-                      .current,
-                    3
+                  old not in operation
+              ):
+                  raise RuntimeError(
+                      "OperationBar streamConfig marker missing"
                   )
-                )
-
-              return (
-                Math.min(
-                  300,
-                  base *
-                    factor
-                ) *
-                1000
-              )
-            }"""
-              )
-
-          operation = re.sub(
-              r"""  const scheduleMonitorOnly =
-              \(\) => \{
-              if \(
-                timer\.current
-              \) \{
-                clearTimeout\(
-                  timer\.current
-                \)
-              \}
-
-              timer\.current =
-                setTimeout\(
-                  \(\) => \{
-                    void handleMonitorOnly\(
-                      false
-                    \)
-                  \},
-
-                  1000 \*
-                    streamConfig\.interval
-                \)
-            \}""",
-
-              """  const scheduleMonitorOnly =
-            (
-              error =
-                false
-            ) => {
-              if (
-                timer.current
-              ) {
-                clearTimeout(
-                  timer.current
-                )
-              }
-
-              timer.current =
-                setTimeout(
-                  () => {
-                    void handleMonitorOnly(
-                      false
-                    )
-                  },
-
-                  getMonitorDelay(
-                    error
-                  )
-                )
-            }""",
-
-              operation,
-              count=1,
-              flags=re.S
-          )
-
-          operation = operation.replace(
-              """        scheduleMonitorOnly()
-
-              return""",
-              """        monitorErrorStreakRef.current =
-                  0
-
-                scheduleMonitorOnly(
-                  false
-                )
-
-                return""",
-              1
-          )
-
-          operation = operation.replace(
-              """        liveNotifiedRef.current =
-                  false
-
-                await updateStreamConfig(""",
-              """        liveNotifiedRef.current =
-                  false
-
-                monitorErrorStreakRef.current =
-                  0
-
-                await updateStreamConfig(""",
-              1
-          )
-
-          operation = operation.replace(
-              """        scheduleMonitorOnly()
-
-                return
-              }
-
-              if (
-                result.code ===
-                  UNKNOWN_CODE
-              ) {""",
-              """        scheduleMonitorOnly(
-                  false
-                )
-
-                return
-              }
-
-              if (
-                result.code ===
-                  UNKNOWN_CODE
-              ) {""",
-              1
-          )
-
-          operation = operation.replace(
-              """        scheduleMonitorOnly()
-
-                return
-              }
-              const monitoringOtherErrorStatus =""",
-              """        monitorErrorStreakRef.current +=
-                  1
-
-                scheduleMonitorOnly(
-                  true
-                )
-
-                return
-              }
-              const monitoringOtherErrorStatus =""",
-              1
-          )
-
-          if (
-              "scheduleMonitorOnly(\n        true"
-              not in
-              operation
-          ):
-              marker = (
-                  "      if (isFirst) {\n"
-                  "        const errMessage ="
-              )
 
               operation = operation.replace(
-                  marker,
-                  """      monitorErrorStreakRef.current +=
-                1
-
-              scheduleMonitorOnly(
-                true
-              )
-
-              if (isFirst) {
-                const errMessage =""",
-                  1
-              )
-
-              operation = operation.replace(
-                  """      scheduleMonitorOnly()
-            }
-
-            const handleStartRecord =""",
-                  """    }
-
-            const handleStartRecord =""",
+                  old,
+                  new,
                   1
               )
 
           operation = operation.replace(
-              """    if (
-              code ===
-              SUCCESS_CODE
-            ) {
-              await updateStreamConfig(""",
-              """    if (
-              code ===
-              SUCCESS_CODE
-            ) {
-              monitorErrorStreakRef.current =
-                0
+              """1000 *
+                streamConfig.interval""",
 
-              await updateStreamConfig(""",
-              1
+              """1000 *
+                effectiveMonitorInterval"""
           )
 
-          old_retry_pattern = r"""    if \(
+          old_condition = """    if (
               code ===
-                CRAWLER_ERROR_CODE\.NOT_URLS \|\|
+                CRAWLER_ERROR_CODE.NOT_URLS ||
               code ===
                 UNKNOWN_CODE
-            \) \{.*?
-              return
-            \}
+            ) {"""
 
-            if \(
-              Object\.values\("""
-
-          new_retry = """    const profileTransientError =
-              isDouyinProfile &&
-              [
-                CRAWLER_ERROR_CODE.TIMEOUT,
-                CRAWLER_ERROR_CODE.FORBIDDEN,
-                CRAWLER_ERROR_CODE.REQUEST_TOO_FAST
-              ].includes(
-                code
-              )
-
-            if (
+          new_condition = """    const shouldRetryMonitor =
               code ===
                 CRAWLER_ERROR_CODE.NOT_URLS ||
               code ===
                 UNKNOWN_CODE ||
-              profileTransientError
-            ) {
-              const hasError =
-                code !==
-                CRAWLER_ERROR_CODE.NOT_URLS
+              (
+                isDouyinProfile &&
+                [
+                  CRAWLER_ERROR_CODE.TIMEOUT,
+                  CRAWLER_ERROR_CODE.FORBIDDEN,
+                  CRAWLER_ERROR_CODE.REQUEST_TOO_FAST
+                ].includes(
+                  code
+                )
+              )
 
-              if (
-                hasError
-              ) {
-                monitorErrorStreakRef.current +=
+            if (
+              shouldRetryMonitor
+            ) {"""
+
+          if (
+              old_condition in
+              operation
+          ):
+              operation = operation.replace(
+                  old_condition,
+                  new_condition,
                   1
-              } else {
-                monitorErrorStreakRef.current =
-                  0
-              }
+              )
 
-              if (
-                timer.current
-              ) {
-                clearTimeout(
-                  timer.current
-                )
-              }
-
-              timer.current =
-                setTimeout(
-                  () => {
-                    void handleStartRecord(
-                      false
-                    )
-                  },
-
-                  getMonitorDelay(
-                    hasError
-                  )
-                )
-
-              await updateStreamConfig(
-                {
-                  ...streamConfig,
-
-                  status:
+          old_status = """          status:
                     code ===
                       CRAWLER_ERROR_CODE.NOT_URLS
                       ? StreamStatus.MONITORING_OFFLINE
-                      : StreamStatus.MONITORING_ERROR
-                },
-
-                streamConfig.id
-              )
-
-              return
-            }
-
-            if (
-              Object.values("""
-
-          operation, count = re.subn(
-              old_retry_pattern,
-              new_retry,
-              operation,
-              count=1,
-              flags=re.S
-          )
+                      : StreamStatus.MONITORING_ERROR"""
 
           if (
-              count != 1
+              old_status not in
+              operation
           ):
               raise RuntimeError(
-                  "OperationBar retry block not found"
+                  "OperationBar retry status marker missing"
               )
 
           write(
-              operation_file,
+              operation_path,
               operation
           )
 
+
           # ============================================================
-          # 14. Upload after recording callback
+          # Upload after recording
           # ============================================================
 
-          list_file = (
-              "src/renderer/src/components/StreamConfigList/"
-              "StreamConfigList.tsx"
+          list_path = (
+              "src/renderer/src/components/"
+              "StreamConfigList/StreamConfigList.tsx"
+          )
+
+          replace_once(
+              list_path,
+
+              """window.api.onStreamRecordEnd(async (id, code, errMsg) => {""",
+
+              """window.api.onStreamRecordEnd(async (id, code, errMsg, recordedFiles) => {"""
           )
 
           stream_list = read(
-              list_file
-          )
-
-          stream_list = stream_list.replace(
-              """window.api.onStreamRecordEnd(async (id, code, errMsg) => {""",
-              """window.api.onStreamRecordEnd(async (id, code, errMsg, recordedFiles) => {"""
+              list_path
           )
 
           if (
               "const webdavConfig"
-              not in
-              stream_list
+              not in stream_list
           ):
               marker = """      // 第二次回调，删除当前title
                 alreadyCallbackOneTimeSet.delete(id)
 
                 unknownErrorRetryTimesMap[id] = unknownErrorRetryTimesMap[id] || 0"""
 
-              upload_block = """      // 第二次回调，处理最终录像文件
+              block = """      // 第二次回调，处理最终录像文件
                 alreadyCallbackOneTimeSet.delete(id)
 
                 const webdavConfig =
@@ -2816,7 +2599,7 @@ jobs:
                         description:
                           result.success
                             ? '云端录像上传成功'
-                            : '云端录像上传失败，本地文件已保留',
+                            : '云端录像上传失败，本地录像已保留',
 
                         variant:
                           result.success
@@ -2852,6 +2635,17 @@ jobs:
                             latest.id
                           )
                       }
+
+                      toast({
+                        title:
+                          streamConfig.title,
+
+                        description:
+                          '云端录像上传失败，本地录像已保留',
+
+                        variant:
+                          'destructive'
+                      })
                     }
                   })()
                 }
@@ -2863,37 +2657,36 @@ jobs:
                   stream_list
               ):
                   raise RuntimeError(
-                      "StreamConfigList marker not found"
+                      "StreamConfigList upload marker missing"
                   )
 
-              stream_list = stream_list.replace(
-                  marker,
-                  upload_block,
-                  1
+              write(
+                  list_path,
+                  stream_list.replace(
+                      marker,
+                      block,
+                      1
+                  )
               )
 
-          write(
-              list_file,
-              stream_list
-          )
 
           # ============================================================
-          # 15. Upload status badge
+          # Upload status badge
           # ============================================================
 
-          card_file = (
-              "src/renderer/src/components/StreamConfigList/components/"
+          card_path = (
+              "src/renderer/src/components/"
+              "StreamConfigList/components/"
               "StreamConfigCard.tsx"
           )
 
           card = read(
-              card_file
+              card_path
           )
 
           if (
               "正在上传云盘"
-              not in
-              card
+              not in card
           ):
               marker = """            {streamConfig.status !== StreamStatus.NOT_STARTED && (
                 <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
@@ -2926,37 +2719,34 @@ jobs:
                   card
               ):
                   raise RuntimeError(
-                      "StreamConfigCard marker not found"
+                      "StreamConfigCard status marker missing"
                   )
 
-              card = card.replace(
-                  marker,
-                  replacement,
-                  1
+              write(
+                  card_path,
+                  card.replace(
+                      marker,
+                      replacement,
+                      1
+                  )
               )
 
-          write(
-              card_file,
-              card
-          )
 
           print(
-              "V2.10 V2 patch complete"
+              "V2.10 V3 patch finished."
           )
           PY
 
-          python3 -m py_compile \
-            /tmp/v210_fix.py
+          python3 -m py_compile /tmp/v210_v3.py
+          python3 /tmp/v210_v3.py
 
-          python3 \
-            /tmp/v210_fix.py
-
-      - name: Verify patch
+      - name: Verify modifications
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f src/main/webdav.ts
+          test -f \
+            src/main/webdav.ts
 
           test -f \
             src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx
@@ -2990,7 +2780,7 @@ jobs:
             src/main/crawler/plugins/douyin.js
 
           grep -q \
-            "monitorErrorStreakRef" \
+            "effectiveMonitorInterval" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
           grep -q \
@@ -3001,7 +2791,7 @@ jobs:
             "const isHide = document.hidden" \
             src/renderer/src/lib/utils.ts
           then
-            echo "Xizhi foreground restriction still exists"
+            echo "ERROR: Xizhi foreground-only restriction still exists"
             exit 1
           fi
 
@@ -3009,27 +2799,29 @@ jobs:
             "const bootstrap =" \
             src/main/crawler/plugins/douyin.js
           then
-            echo "Douyin bootstrap request still exists"
+            echo "ERROR: Douyin homepage bootstrap still exists"
             exit 1
           fi
 
-          echo "Static checks passed."
+          echo "Static verification passed."
 
       - name: TypeScript check
         run: npm run typecheck
 
-      - name: Build
+      - name: Build application
         run: npm run build
 
-      - name: Git diff check
+      - name: Check diff
         shell: bash
         run: |
           set -euo pipefail
 
           git diff --check
+
+          echo "===== Changed Files ====="
           git status --short
 
-      - name: Commit changes
+      - name: Commit tested changes
         shell: bash
         run: |
           set -euo pipefail
@@ -3053,7 +2845,7 @@ jobs:
 
           if git diff --cached --quiet
           then
-            echo "No changes"
+            echo "No changes to commit."
           else
             git commit \
               -m "feat: add WebDAV upload and improve Douyin monitoring"
@@ -3069,7 +2861,7 @@ jobs:
             origin \
             "$FEATURE_BRANCH"
 
-      - name: Promote tested source
+      - name: Promote after all checks pass
         shell: bash
         run: |
           set -euo pipefail
@@ -3082,19 +2874,34 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# Fideo V2.10 V2"
+            echo "# Fideo V2.10 V3"
             echo ""
-            echo "✅ 小蓝云盘 WebDAV 自动上传"
-            echo "✅ 按主播名称创建目录"
-            echo "✅ 云端录像仅使用时间命名"
-            echo "✅ 上传完成大小校验"
-            echo "✅ 上传成功后可选删除本地录像"
-            echo "✅ 息知前台/后台均推送"
-            echo "✅ 抖音主页请求降低频率"
-            echo "✅ 抖音主页缓存"
-            echo "✅ 风控自动退避"
-            echo "✅ typecheck"
-            echo "✅ build"
+            echo "## WebDAV"
+            echo "✅ 小蓝云盘 WebDAV"
+            echo "✅ 测试上传"
+            echo "✅ 按主播名称自动创建文件夹"
+            echo "✅ 文件仅按时间命名"
+            echo "✅ 分段录像自动添加序号"
+            echo "✅ 上传失败自动重试"
+            echo "✅ 云端大小校验"
+            echo "✅ 可选上传成功后删除本地录像"
+            echo "✅ 上传状态显示"
             echo ""
-            echo "正式 release.yml 未修改"
+            echo "## 息知"
+            echo "✅ 软件前台也发送"
+            echo "✅ 软件后台也发送"
+            echo ""
+            echo "## 抖音主页监控"
+            echo "✅ 删除每轮主页 Bootstrap 请求"
+            echo "✅ Profile 结果缓存"
+            echo "✅ 主播主页最低 60 秒检测一次"
+            echo "✅ 风控/超时/请求过快继续监控"
+            echo ""
+            echo "## Validation"
+            echo "✅ Python compile"
+            echo "✅ npm run typecheck"
+            echo "✅ npm run build"
+            echo "✅ git diff --check"
+            echo ""
+            echo "release.yml 未修改"
           } >> "$GITHUB_STEP_SUMMARY"
