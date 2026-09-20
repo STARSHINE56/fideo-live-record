@@ -43,24 +43,98 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           BACKUP_BRANCH="backup-v210-${GITHUB_RUN_ID}"
+
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
+
+          echo "Backup created: $BACKUP_BRANCH"
 
       - name: Create feature branch
         shell: bash
         run: |
           set -euo pipefail
+
           git checkout -B "$FEATURE_BRANCH" "$SOURCE_BRANCH"
+
+      - name: Load V2.10 patch script from main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+
+          mkdir -p scripts
+
+          git show \
+            origin/main:scripts/v210_patch.py \
+            > scripts/v210_patch.py
+
+          test -s scripts/v210_patch.py
+
+          echo "Patch script loaded from main:"
+          wc -l scripts/v210_patch.py
 
       - name: Install dependencies
         run: npm ci
 
       - name: Validate patch script
-        run: python3 -m py_compile scripts/v210_patch.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/v210_patch.py
+          echo "Python syntax check passed."
 
       - name: Apply V2.10 patch
-        run: python3 scripts/v210_patch.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v210_patch.py
+
+      - name: Verify V2.10 files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f src/main/webdav.ts
+          test -f src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx
+
+          grep -q "webdavEnabled" type.d.ts
+          grep -q "cloudUploadStatus" type.d.ts
+
+          grep -q "TEST_WEBDAV" src/const.ts
+          grep -q "UPLOAD_WEBDAV" src/const.ts
+
+          grep -q "testWebdav" src/preload/index.ts
+          grep -q "uploadWebdav" src/preload/index.ts
+
+          grep -q "testWebdav" src/main/index.ts
+          grep -q "uploadWebdav" src/main/index.ts
+
+          grep -q "YYYY-MM-DD_HH-mm-ss" src/main/ffmpeg/record.ts
+
+          grep -q "DOUYIN_PROFILE_CACHE_MS" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q "effectiveMonitorInterval" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q "recordedFiles" \
+            src/renderer/src/components/StreamConfigList/StreamConfigList.tsx
+
+          grep -q "正在上传云盘" \
+            src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx
+
+          if grep -q \
+            "const isHide = document.hidden" \
+            src/renderer/src/lib/utils.ts
+          then
+            echo "ERROR: Xizhi foreground restriction still exists."
+            exit 1
+          fi
+
+          echo "V2.10 static verification passed."
 
       - name: TypeScript check
         run: npm run typecheck
@@ -72,8 +146,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           git diff --check
+
+          echo "===== Changed files ====="
           git status --short
+
+      - name: Remove helper script before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f scripts/v210_patch.py
+
+          if [ -d scripts ] && [ -z "$(ls -A scripts)" ]
+          then
+            rmdir scripts
+          fi
 
       - name: Commit tested changes
         shell: bash
@@ -101,17 +190,42 @@ jobs:
           then
             echo "No changes to commit."
           else
-            git commit -m "feat: add WebDAV upload and improve Douyin monitoring"
+            git commit \
+              -m "feat: add WebDAV upload and improve Douyin monitoring"
           fi
 
       - name: Push feature branch
         shell: bash
         run: |
           set -euo pipefail
-          git push --force origin "$FEATURE_BRANCH"
+
+          git push \
+            --force \
+            origin \
+            "$FEATURE_BRANCH"
 
       - name: Promote after all checks pass
         shell: bash
         run: |
           set -euo pipefail
-          git push origin "HEAD:${SOURCE_BRANCH}"
+
+          git push \
+            origin \
+            "HEAD:${SOURCE_BRANCH}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "# V2.10"
+            echo ""
+            echo "✅ 从 main 正确加载补丁脚本"
+            echo "✅ Python 语法检查"
+            echo "✅ V2.10 源码修改"
+            echo "✅ TypeScript 检查"
+            echo "✅ 应用构建"
+            echo "✅ git diff 检查"
+            echo "✅ 测试成功后才更新源码分支"
+            echo ""
+            echo "release.yml 未修改"
+          } >> "$GITHUB_STEP_SUMMARY"
