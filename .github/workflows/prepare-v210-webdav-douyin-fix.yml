@@ -1,4 +1,4 @@
-name: Prepare V2.10 WebDAV Douyin Fix V4
+name: Prepare V2.10 WebDAV Douyin Fix V5
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-v210-webdav-douyin-fix-v4
+  group: prepare-v210-webdav-douyin-fix-v5
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v4
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v5
 
 jobs:
   prepare:
-    name: Prepare V2.10 V4
+    name: Prepare V2.10 V5
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKUP_BRANCH="backup-v210-v4-${GITHUB_RUN_ID}"
+          BACKUP_BRANCH="backup-v210-v5-${GITHUB_RUN_ID}"
 
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
@@ -1677,16 +1677,24 @@ jobs:
             startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),"""
               )
 
-          replace_once(
-              preload_path,
+          preload = read(
+              preload_path
+          )
 
-              """  onStreamRecordEnd: (callback: (title: string, code: number, errMsg?: string) => void) => {
-            ipcRenderer.on(STREAM_RECORD_END, (_, title, code, errMsg) => {
-              callback(title, code, errMsg)
-            })
-          },""",
+          if (
+              "files?: IRecordedFile[]"
+              not in preload
+          ):
+              pattern = re.compile(
+                  r"""  onStreamRecordEnd:\s*\(callback:\s*\(title:\s*string,\s*code:\s*number,\s*errMsg\?:\s*string\)\s*=>\s*void\)\s*=>\s*\{\s*
+\s*ipcRenderer\.on\(STREAM_RECORD_END,\s*\(_,\s*title,\s*code,\s*errMsg\)\s*=>\s*\{\s*
+\s*callback\(title,\s*code,\s*errMsg\)\s*
+\s*\}\)\s*
+\s*\},""",
+                  re.S
+              )
 
-              """  onStreamRecordEnd: (
+              replacement = """  onStreamRecordEnd: (
             callback: (
               title: string,
               code: number,
@@ -1712,7 +1720,24 @@ jobs:
               }
             )
           },"""
-          )
+
+              preload, count = pattern.subn(
+                  replacement,
+                  preload,
+                  count=1
+              )
+
+              if (
+                  count != 1
+              ):
+                  raise RuntimeError(
+                      "Preload onStreamRecordEnd callback not found"
+                  )
+
+              write(
+                  preload_path,
+                  preload
+              )
 
 
           # ============================================================
@@ -2760,7 +2785,7 @@ jobs:
 
 
           print(
-              "V2.10 V4 patch finished."
+              "V2.10 V5 patch finished."
           )
           PY
 
@@ -2901,7 +2926,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# Fideo V2.10 V4"
+            echo "# Fideo V2.10 V5"
             echo ""
             echo "## WebDAV"
             echo "✅ 小蓝云盘 WebDAV"
