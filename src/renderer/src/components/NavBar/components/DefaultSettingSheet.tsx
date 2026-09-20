@@ -10,6 +10,8 @@ import { Input } from '@/shadcn/ui/input'
 import { Select, SelectTrigger, SelectItem, SelectContent, SelectValue } from '@/shadcn/ui/select'
 import { useDefaultSettingsStore } from '@renderer/store/useDefaultSettingsStore'
 import { useEffect, useState } from 'react'
+import { useToast } from '@renderer/hooks/useToast'
+import { testXizhiPushNotification } from '@renderer/lib/utils'
 
 const formSchema = z.object({
   directory: z.string(),
@@ -31,6 +33,15 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
     douyinLoggedIn,
     setDouyinLoggedIn
   ] = useState(false)
+
+  const [
+    xizhiTesting,
+    setXizhiTesting
+  ] = useState(false)
+
+  const {
+    toast
+  } = useToast()
 
   const { defaultSettingsConfig, setDefaultSettingsConfig } = useDefaultSettingsStore(
     (state) => state
@@ -79,6 +90,86 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
 
       setDouyinLoggedIn(false)
     }
+
+  const handleTestXizhi =
+    async () => {
+      const key =
+        form
+          .getValues(
+            'xizhiKey'
+          )
+          ?.trim()
+
+      if (!key) {
+        toast({
+          title:
+            t(
+              'default_settings.xizhi_test_failed'
+            ),
+
+          description:
+            t(
+              'default_settings.xizhi_key_required'
+            ),
+
+          variant: 'destructive'
+        })
+
+        return
+      }
+
+      setXizhiTesting(true)
+
+      try {
+        const success =
+          await testXizhiPushNotification({
+            key,
+
+            title:
+              t(
+                'default_settings.xizhi_test_title'
+              ),
+
+            content:
+              t(
+                'default_settings.xizhi_test_content'
+              )
+          })
+
+        if (!success) {
+          throw new Error('XIZHI_TEST_FAILED')
+        }
+
+        toast({
+          title:
+            t(
+              'default_settings.xizhi_test_success'
+            ),
+
+          description:
+            t(
+              'default_settings.xizhi_test_success_desc'
+            )
+        })
+      } catch {
+        toast({
+          title:
+            t(
+              'default_settings.xizhi_test_failed'
+            ),
+
+          description:
+            t(
+              'default_settings.xizhi_test_failed_desc'
+            ),
+
+          variant: 'destructive'
+        })
+      } finally {
+        setXizhiTesting(false)
+      }
+    }
+
 
   const handleSelectDir = async () => {
     const { canceled, filePaths } = await window.api.selectDir()
@@ -209,13 +300,38 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
                   name="xizhiKey"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>{t('default_settings.xizhi_key')}</FormLabel>
+                      <FormLabel>
+                        {t(
+                          'default_settings.xizhi_key'
+                        )}
+                      </FormLabel>
+
                       <FormControl>
-                        <Input
-                          placeholder={t('default_settings.xizhi_key_placeholder')}
-                          {...field}
-                        />
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder={t(
+                              'default_settings.xizhi_key_placeholder'
+                            )}
+                            {...field}
+                          />
+
+                          <Button
+                            variant="outline"
+                            type="button"
+                            disabled={xizhiTesting}
+                            onClick={handleTestXizhi}
+                          >
+                            {xizhiTesting
+                              ? t(
+                                  'default_settings.xizhi_testing'
+                                )
+                              : t(
+                                  'default_settings.xizhi_test'
+                                )}
+                          </Button>
+                        </div>
                       </FormControl>
+
                       <FormMessage />
                     </FormItem>
                   )}

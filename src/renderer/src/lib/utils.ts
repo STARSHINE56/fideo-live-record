@@ -32,3 +32,35 @@ export function useXizhiToPushNotification(options: {
   const titleAndContent = options.content ? `${options.title} - ${options.content}` : options.title
   fetch(`${options.key}?title=${encodeURIComponent(titleAndContent)}`)
 }
+
+export async function testXizhiPushNotification(options: {
+  key: string
+  title: string
+  content?: string
+}): Promise<boolean> {
+  const key =
+    options.key.trim()
+
+  if (!key) {
+    return false
+  }
+
+  const titleAndContent =
+    options.content
+      ? `${options.title} - ${options.content}`
+      : options.title
+
+  const separator =
+    key.includes('?')
+      ? '&'
+      : '?'
+
+  const response =
+    await fetch(
+      `${key}${separator}title=${encodeURIComponent(
+        titleAndContent
+      )}`
+    )
+
+  return response.ok
+}
