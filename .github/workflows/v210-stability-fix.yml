@@ -63,180 +63,227 @@ jobs:
         run: |
           set -euo pipefail
 
-          python3 - <<'PY'
-          from pathlib import Path
-          import json
-          import re
+          node <<'NODE'
+          const fs = require('fs')
 
-          def read(path):
-              return Path(path).read_text(
-                  encoding="utf-8"
-              ).replace(
-                  "\r\n",
-                  "\n"
-              ).replace(
-                  "\r",
-                  "\n"
-              )
+          function read(path) {
+            return fs
+              .readFileSync(path, 'utf8')
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n')
+          }
 
-          def write(path, content):
-              Path(path).write_text(
-                  content,
-                  encoding="utf-8",
-                  newline="\n"
-              )
-
-          def replace_regex(
+          function write(path, content) {
+            fs.writeFileSync(
+              path,
               content,
-              pattern,
-              replacement,
-              name
-          ):
-              result, count = re.subn(
-                  pattern,
-                  replacement,
-                  content,
-                  count=1,
-                  flags=re.MULTILINE | re.DOTALL
+              'utf8'
+            )
+          }
+
+          function replaceOnce(
+            content,
+            oldValue,
+            newValue,
+            name
+          ) {
+            const index =
+              content.indexOf(
+                oldValue
               )
 
-              if count != 1:
-                  raise RuntimeError(
-                      f"{name}: expected 1 match, got {count}"
-                  )
+            if (index < 0) {
+              throw new Error(
+                `Marker missing: ${name}`
+              )
+            }
 
-              print(
-                  f"OK: {name}"
+            console.log(
+              `OK: ${name}`
+            )
+
+            return (
+              content.slice(
+                0,
+                index
+              ) +
+              newValue +
+              content.slice(
+                index +
+                  oldValue.length
+              )
+            )
+          }
+
+          function replaceBetween(
+            content,
+            startMarker,
+            endMarker,
+            replacement,
+            name
+          ) {
+            const start =
+              content.indexOf(
+                startMarker
               )
 
-              return result
-
-          # ==================================================
-          # 1. package.json 测试版本号
-          # ==================================================
-
-          package_path = Path(
-              "package.json"
-          )
-
-          package = json.loads(
-              package_path.read_text(
-                  encoding="utf-8"
+            if (start < 0) {
+              throw new Error(
+                `Start marker missing: ${name}`
               )
-          )
+            }
 
-          package["version"] = (
-              "1.1.11-beta.1"
-          )
+            const end =
+              content.indexOf(
+                endMarker,
+                start +
+                  startMarker.length
+              )
 
-          package_path.write_text(
-              json.dumps(
-                  package,
-                  ensure_ascii=False,
-                  indent=2
-              ) + "\n",
-              encoding="utf-8"
-          )
+            if (end < 0) {
+              throw new Error(
+                `End marker missing: ${name}`
+              )
+            }
 
-          print(
-              "OK: package version"
-          )
+            console.log(
+              `OK: ${name}`
+            )
 
-          # ==================================================
-          # 2. 抖音直播间请求使用完整登录 Cookie
-          # ==================================================
+            return (
+              content.slice(
+                0,
+                start
+              ) +
+              replacement +
+              content.slice(
+                end
+              )
+            )
+          }
 
-          path = (
-              "src/main/crawler/plugins/douyin.js"
-          )
+          // ============================================
+          // 1. package.json 版本号
+          // ============================================
 
-          text = read(path)
+          {
+            const path =
+              'package.json'
 
-          text = replace_regex(
-              text,
-              r"""const\s+loginCookie\s*=\s*
-                  getCookieWithTtwid
-                  \s*\(\s*cookie\s*\)
-              """.replace(
-                  " ",
-                  r"[ \t]*"
-              ),
-              """const loginCookie =
+            const pkg =
+              JSON.parse(
+                read(path)
+              )
+
+            pkg.version =
+              '1.1.11-beta.1'
+
+            write(
+              path,
+              JSON.stringify(
+                pkg,
+                null,
+                2
+              ) + '\n'
+            )
+
+            console.log(
+              'OK: package version'
+            )
+          }
+
+          // ============================================
+          // 2. 抖音完整 Cookie
+          // ============================================
+
+          {
+            const path =
+              'src/main/crawler/plugins/douyin.js'
+
+            let text =
+              read(path)
+
+            text =
+              replaceBetween(
+                text,
+
+                '  const loginCookie =\n',
+
+                '  const finalCookie = [\n',
+
+                `  const loginCookie =
             cookie
               ? String(cookie).trim()
-              : ''""",
-              "Douyin full login cookie"
-          )
+              : ''
 
-          write(
+          `,
+
+                'Douyin full login cookie'
+              )
+
+            write(
               path,
               text
-          )
+            )
+          }
 
-          # ==================================================
-          # 3. 修复抖音登录状态误判
-          # ==================================================
+          // ============================================
+          // 3. 抖音登录状态判断
+          // ============================================
 
-          path = (
-              "src/main/douyin-session.ts"
-          )
+          {
+            const path =
+              'src/main/douyin-session.ts'
 
-          text = read(path)
+            let text =
+              read(path)
 
-          pattern = (
-              r"const\s+hasSession\s*=\s*"
-              r"cookies\.some\(\s*"
-              r"\(cookie\)\s*=>\s*"
-              r"authCookieNames\.has\("
-              r"cookie\.name"
-              r"\)\s*"
-              r"\)\s*"
-              r"\|\|\s*"
-              r"cookies\.length\s*>=\s*5"
-          )
-
-          replacement = """const hasSession =
+            const oldValue =
+          `  const hasSession =
             cookies.some((cookie) =>
               authCookieNames.has(cookie.name)
-            )"""
+            ) ||
+            cookies.length >= 5
+          `
 
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "Douyin login status"
-          )
+            const newValue =
+          `  const hasSession =
+            cookies.some((cookie) =>
+              authCookieNames.has(cookie.name)
+            )
+          `
 
-          write(
+            text =
+              replaceOnce(
+                text,
+                oldValue,
+                newValue,
+                'Douyin login status'
+              )
+
+            write(
               path,
               text
-          )
+            )
+          }
 
-          # ==================================================
-          # 4. 录像配置日志 Cookie 脱敏
-          # ==================================================
+          // ============================================
+          // 4. Cookie 日志脱敏
+          // ============================================
 
-          path = (
-              "src/main/ffmpeg/record.ts"
-          )
+          {
+            const path =
+              'src/main/ffmpeg/record.ts'
 
-          text = read(path)
+            let text =
+              read(path)
 
-          pattern = (
-              r"writeLog\(\s*"
-              r"title\s*,\s*"
-              r"`RecordStream Config:\s*"
-              r"\$\{JSON\.stringify\(\s*"
-              r"streamConfig\s*,\s*"
-              r"null\s*,\s*"
-              r"2\s*"
-              r"\)\}`"
-              r"\s*\)"
-          )
+            const oldValue =
+              '  writeLog(title, `RecordStream Config: ${JSON.stringify(streamConfig, null, 2)}`)'
 
-          replacement = """const safeLogConfig = {
+            const newValue =
+          `  const safeLogConfig = {
             ...streamConfig,
-
             cookie:
               streamConfig.cookie
                 ? '[REDACTED]'
@@ -245,56 +292,55 @@ jobs:
 
           writeLog(
             title,
-
-            `RecordStream Config: ${JSON.stringify(
+            \`RecordStream Config: \${JSON.stringify(
               safeLogConfig,
               null,
               2
-            )}`
-          )"""
+            )}\`
+          )`
 
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "Record cookie redaction"
-          )
+            text =
+              replaceOnce(
+                text,
+                oldValue,
+                newValue,
+                'Record cookie redaction'
+              )
 
-          write(
+            write(
               path,
               text
-          )
+            )
+          }
 
-          # ==================================================
-          # 5. 软件启动后恢复异常退出残留状态
-          # ==================================================
+          // ============================================
+          // 5. 启动清理残留状态
+          // ============================================
 
-          path = (
-              "src/renderer/src/store/"
-              "useStreamConfigStore.ts"
-          )
+          {
+            const path =
+              'src/renderer/src/store/useStreamConfigStore.ts'
 
-          text = read(path)
+            let text =
+              read(path)
 
-          pattern = (
-              r"(if\s*\(\s*"
-              r"typeof\s+streamConfig\.autoRecord"
-              r"\s*!==\s*"
-              r"'boolean'"
-              r"\s*\)\s*\{\s*"
-              r"shouldUpdate\s*=\s*true\s*"
-              r"streamConfig\.autoRecord"
-              r"\s*=\s*true\s*"
-              r"\})"
-          )
+            const anchor =
+          `      if (
+                typeof streamConfig.autoRecord !==
+                'boolean'
+              ) {
+                shouldUpdate = true
+                streamConfig.autoRecord = true
+              }
+          `
 
-          replacement = r"""\1
-
+            const replacement =
+              anchor +
+          `
               if (
                 streamConfig.status !== 0
               ) {
                 shouldUpdate = true
-
                 streamConfig.status = 0
               }
 
@@ -303,51 +349,43 @@ jobs:
                 'uploading'
               ) {
                 shouldUpdate = true
-
                 streamConfig.cloudUploadStatus =
                   undefined
-              }"""
+              }
+          `
 
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "Runtime state recovery"
-          )
+            text =
+              replaceOnce(
+                text,
+                anchor,
+                replacement,
+                'Runtime state recovery'
+              )
 
-          write(
+            write(
               path,
               text
-          )
+            )
+          }
 
-          # ==================================================
-          # 6. 主进程外部链接只允许 http / https
-          # ==================================================
+          // ============================================
+          // 6. 外部链接白名单
+          // ============================================
 
-          path = (
-              "src/main/index.ts"
-          )
+          {
+            const path =
+              'src/main/index.ts'
 
-          text = read(path)
+            let text =
+              read(path)
 
-          if (
-              "function openSafeExternalUrl("
-              in text
-          ):
-              raise RuntimeError(
-                  "openSafeExternalUrl already exists"
-              )
+            text =
+              replaceOnce(
+                text,
 
-          marker = (
-              "async function checkUpdate() {"
-          )
+                'async function checkUpdate() {',
 
-          if marker not in text:
-              raise RuntimeError(
-                  "checkUpdate marker not found"
-              )
-
-          helper = """function openSafeExternalUrl(
+          `function openSafeExternalUrl(
             value: string
           ) {
             try {
@@ -371,91 +409,65 @@ jobs:
             }
           }
 
-          async function checkUpdate() {"""
+          async function checkUpdate() {`,
 
-          text = text.replace(
-              marker,
-              helper,
-              1
-          )
-
-          pattern = (
-              r"mainWindow\.webContents"
-              r"\.setWindowOpenHandler"
-              r"\(\s*"
-              r"\(details\)\s*=>\s*\{\s*"
-              r"shell\.openExternal"
-              r"\(\s*details\.url\s*\)"
-              r"\s*"
-              r"return\s*\{\s*"
-              r"action:\s*'deny'"
-              r"\s*\}"
-              r"\s*\}"
-              r"\s*\)"
-          )
-
-          replacement = """mainWindow.webContents.setWindowOpenHandler((details) => {
-            openSafeExternalUrl(
-              details.url
-            )
-
-            return {
-              action: 'deny'
-            }
-          })"""
-
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "Window external URL guard"
-          )
-
-          pattern = (
-              r"ipcMain\.handle"
-              r"\(\s*"
-              r"NAV_BY_DEFAULT_BROWSER"
-              r"\s*,\s*"
-              r"\(_,\s*url:\s*string\)"
-              r"\s*=>\s*\{\s*"
-              r"shell\.openExternal"
-              r"\(\s*url\s*\)"
-              r"\s*\}"
-              r"\s*\)"
-          )
-
-          replacement = """ipcMain.handle(
-            NAV_BY_DEFAULT_BROWSER,
-
-            (_, url: string) => {
-              return openSafeExternalUrl(
-                url
-              )
-            }
-          )"""
-
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "IPC external URL guard"
-          )
-
-          # ==================================================
-          # 7. WebDAV 上传主进程串行队列
-          # ==================================================
-
-          marker = (
-              "export const writeLog = "
-              "writeLogWrapper(app.getPath('userData'))"
-          )
-
-          if marker not in text:
-              raise RuntimeError(
-                  "writeLog marker not found"
+                'Safe external URL helper'
               )
 
-          queue_code = """export const writeLog = writeLogWrapper(app.getPath('userData'))
+            text =
+              replaceOnce(
+                text,
+
+          `  mainWindow.webContents.setWindowOpenHandler((details) => {
+              shell.openExternal(details.url)
+              return { action: 'deny' }
+            })`,
+
+          `  mainWindow.webContents.setWindowOpenHandler((details) => {
+              openSafeExternalUrl(
+                details.url
+              )
+
+              return {
+                action: 'deny'
+              }
+            })`,
+
+                'Window URL guard'
+              )
+
+            text =
+              replaceOnce(
+                text,
+
+          `  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
+              shell.openExternal(url)
+            })`,
+
+          `  ipcMain.handle(
+              NAV_BY_DEFAULT_BROWSER,
+
+              (_, url: string) => {
+                return openSafeExternalUrl(
+                  url
+                )
+              }
+            )`,
+
+                'IPC URL guard'
+              )
+
+            // ============================================
+            // 7. WebDAV 串行上传队列
+            // ============================================
+
+            text =
+              replaceOnce(
+                text,
+
+                "export const writeLog = writeLogWrapper(app.getPath('userData'))",
+
+          `export const writeLog = writeLogWrapper(app.getPath('userData'))
 
           let webdavUploadQueue:
             Promise<void> =
@@ -488,83 +500,72 @@ jobs:
               )
 
             return task
-          }"""
+          }`,
 
-          text = text.replace(
-              marker,
-              queue_code,
-              1
-          )
-
-          pattern = (
-              r"ipcMain\.handle"
-              r"\(\s*"
-              r"UPLOAD_WEBDAV"
-              r"\s*,\s*"
-              r"async\s*"
-              r"\(_,\s*request\)"
-              r"\s*=>\s*\{\s*"
-              r"return\s+await\s+"
-              r"uploadWebdav"
-              r"\(\s*request\s*\)"
-              r"\s*\}"
-              r"\s*\)"
-          )
-
-          replacement = """ipcMain.handle(
-            UPLOAD_WEBDAV,
-
-            async (_, request) => {
-              return await enqueueWebdavUpload(
-                request
+                'WebDAV queue'
               )
-            }
-          )"""
 
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "WebDAV serial queue"
-          )
+            text =
+              replaceOnce(
+                text,
 
-          write(
+          `  ipcMain.handle(
+              UPLOAD_WEBDAV,
+              async (_, request) => {
+                return await uploadWebdav(
+                  request
+                )
+              }
+            )`,
+
+          `  ipcMain.handle(
+              UPLOAD_WEBDAV,
+
+              async (_, request) => {
+                return await enqueueWebdavUpload(
+                  request
+                )
+              }
+            )`,
+
+                'WebDAV queue handler'
+              )
+
+            write(
               path,
               text
-          )
+            )
+          }
 
-          # ==================================================
-          # 8. WebDAV 地址强制 HTTPS
-          # ==================================================
+          // ============================================
+          // 8. WebDAV 强制 HTTPS
+          // ============================================
 
-          path = (
-              "src/main/webdav.ts"
-          )
+          {
+            const path =
+              'src/main/webdav.ts'
 
-          text = read(path)
+            let text =
+              read(path)
 
-          if (
-              "const validateWebdavUrl"
-              in text
-          ):
-              raise RuntimeError(
-                  "validateWebdavUrl already exists"
+            const marker =
+              'const cleanBaseUrl = ('
+
+            const position =
+              text.indexOf(
+                marker
               )
 
-          marker = (
-              "const cleanBaseUrl = ("
-          )
-
-          position = text.find(
-              marker
-          )
-
-          if position < 0:
-              raise RuntimeError(
-                  "cleanBaseUrl marker not found"
+            if (
+              position < 0
+            ) {
+              throw new Error(
+                'Marker missing: cleanBaseUrl'
               )
+            }
 
-          validator = """const validateWebdavUrl = (
+            const validator =
+          `const validateWebdavUrl = (
             value: string
           ) => {
             const trimmed =
@@ -598,44 +599,74 @@ jobs:
             return trimmed
           }
 
-          """
+          `
 
-          text = (
-              text[:position]
-              + validator
-              + text[position:]
-          )
+            text =
+              text.slice(
+                0,
+                position
+              ) +
+              validator +
+              text.slice(
+                position
+              )
 
-          pattern = (
-              r"(const\s+config\s*:\s*"
-              r"IWebdavConfig\s*=\s*\{\s*"
-              r"url\s*:\s*)"
-              r"request\.url"
-          )
+            const oldConfig =
+          `  const config:
+              IWebdavConfig = {
+              url:
+                request.url,
 
-          replacement = (
-              r"\1validateWebdavUrl("
-              r"request.url"
-              r")"
-          )
+              username:
+                request.username,
 
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "Upload HTTPS validation"
-          )
+              password:
+                request.password,
 
-          pattern = (
-              r"(export\s+async\s+function\s+"
-              r"testWebdav"
-              r"\(\s*"
-              r"config:\s*IWebdavConfig"
-              r"\s*\)\s*\{\s*"
-              r"try\s*\{)"
-          )
+              remoteRoot:
+                request.remoteRoot
+            }
+          `
 
-          replacement = r"""\1
+            const newConfig =
+          `  const config:
+              IWebdavConfig = {
+              url:
+                validateWebdavUrl(
+                  request.url
+                ),
+
+              username:
+                request.username,
+
+              password:
+                request.password,
+
+              remoteRoot:
+                request.remoteRoot
+            }
+          `
+
+            text =
+              replaceOnce(
+                text,
+                oldConfig,
+                newConfig,
+                'WebDAV upload HTTPS'
+              )
+
+            const oldTest =
+          `export async function testWebdav(
+            config: IWebdavConfig
+          ) {
+            try {
+          `
+
+            const newTest =
+          `export async function testWebdav(
+            config: IWebdavConfig
+          ) {
+            try {
               config = {
                 ...config,
 
@@ -643,26 +674,29 @@ jobs:
                   validateWebdavUrl(
                     config.url
                   )
-              }"""
+              }
+          `
 
-          text = replace_regex(
-              text,
-              pattern,
-              replacement,
-              "Test HTTPS validation"
-          )
+            text =
+              replaceOnce(
+                text,
+                oldTest,
+                newTest,
+                'WebDAV test HTTPS'
+              )
 
-          write(
+            write(
               path,
               text
-          )
+            )
+          }
 
-          print(
-              "All stability patches applied."
+          console.log(
+            'ALL PATCHES APPLIED'
           )
-          PY
+          NODE
 
-      - name: Static verification
+      - name: Verify patched source
         shell: bash
         run: |
           set -euo pipefail
@@ -679,7 +713,7 @@ jobs:
             "getCookieWithTtwid(cookie)" \
             src/main/crawler/plugins/douyin.js
           then
-            echo "ERROR: desktop flow still truncates login cookie"
+            echo "ERROR: old ttwid-only cookie path still exists"
             exit 1
           fi
 
@@ -717,7 +751,7 @@ jobs:
 
           git diff --check
 
-          echo "Static verification passed."
+          echo "Source verification passed."
 
       - name: Install dependencies
         run: npm ci
@@ -728,18 +762,14 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Final verification
+      - name: Final diff check
         shell: bash
         run: |
           set -euo pipefail
 
           git diff --check
 
-          echo "===== Changed files ====="
           git status --short
-
-          echo ""
-          echo "===== Diff summary ====="
           git diff --stat
 
       - name: Commit verified fixes
@@ -761,10 +791,10 @@ jobs:
             echo "No changes to commit."
           else
             git commit \
-              -m "fix: improve V2.10 stability"
+              -m "fix: harden V2.10 stability"
           fi
 
-      - name: Push verified fix branch
+      - name: Push fix branch
         shell: bash
         run: |
           set -euo pipefail
@@ -774,7 +804,7 @@ jobs:
             origin \
             "$FIX_BRANCH"
 
-      - name: Promote after all checks pass
+      - name: Promote verified source
         shell: bash
         run: |
           set -euo pipefail
@@ -789,11 +819,11 @@ jobs:
           {
             echo "# V2.10 Stability Fix"
             echo ""
-            echo "✅ Full Douyin login Cookie"
-            echo "✅ Login status detection"
+            echo "✅ Full Douyin login cookie"
+            echo "✅ Login detection fix"
             echo "✅ Cookie log redaction"
             echo "✅ Runtime state recovery"
-            echo "✅ WebDAV serial upload queue"
+            echo "✅ WebDAV serial queue"
             echo "✅ WebDAV HTTPS validation"
             echo "✅ External URL whitelist"
             echo "✅ Version 1.1.11-beta.1"
