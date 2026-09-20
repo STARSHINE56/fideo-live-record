@@ -1,4 +1,4 @@
-name: V2.10 Stability Fix V5
+name: V2.10 Stability Fix V6
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: v210-stability-fix-v5
+  group: v210-stability-fix-v6
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FIX_BRANCH: v210-stability-fix-v5
+  FIX_BRANCH: v210-stability-fix-v6
 
 jobs:
   fix:
@@ -43,12 +43,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          BACKUP="backup-v210-stability-v5-${GITHUB_RUN_ID}"
-
+          BACKUP="backup-v210-stability-v6-${GITHUB_RUN_ID}"
           git branch "$BACKUP"
           git push origin "$BACKUP"
-
           echo "Backup: $BACKUP"
 
       - name: Create fix branch
@@ -65,6 +62,7 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           import json
+          import re
 
           def load(path):
               return Path(path).read_text(
@@ -82,15 +80,11 @@ jobs:
               for i in range(start, len(lines)):
                   if text in lines[i]:
                       return i
-
               raise RuntimeError(
                   f"找不到代码标记: {text}"
               )
 
-          # ==================================================
           # 1. 版本号
-          # ==================================================
-
           pkg_path = Path("package.json")
 
           pkg = json.loads(
@@ -148,10 +142,7 @@ jobs:
 
           print("OK 1: version")
 
-          # ==================================================
           # 2. 抖音完整登录 Cookie
-          # ==================================================
-
           path = "src/main/crawler/plugins/douyin.js"
           lines = load(path).splitlines()
 
@@ -181,9 +172,7 @@ jobs:
               ""
           ]
 
-          lines[
-              start:end
-          ] = new_lines
+          lines[start:end] = new_lines
 
           save(
               path,
@@ -192,10 +181,7 @@ jobs:
 
           print("OK 2: full Douyin cookie")
 
-          # ==================================================
           # 3. 登录状态判断
-          # ==================================================
-
           path = "src/main/douyin-session.ts"
           lines = load(path).splitlines()
 
@@ -225,9 +211,7 @@ jobs:
               ""
           ]
 
-          lines[
-              start:end
-          ] = replacement
+          lines[start:end] = replacement
 
           save(
               path,
@@ -236,10 +220,7 @@ jobs:
 
           print("OK 3: login detection")
 
-          # ==================================================
           # 4. 录像日志 Cookie 脱敏
-          # ==================================================
-
           path = "src/main/ffmpeg/record.ts"
           lines = load(path).splitlines()
 
@@ -274,9 +255,7 @@ jobs:
               f"{indent})"
           ]
 
-          lines[
-              index:index + 1
-          ] = replacement
+          lines[index:index + 1] = replacement
 
           save(
               path,
@@ -285,10 +264,7 @@ jobs:
 
           print("OK 4: cookie redaction")
 
-          # ==================================================
           # 5. 启动清理运行时残留状态
-          # ==================================================
-
           path = (
               "src/renderer/src/store/"
               "useStreamConfigStore.ts"
@@ -337,9 +313,13 @@ jobs:
               f"{indent}}}"
           ]
 
-          lines[
-              closing + 1:closing + 1
-          ] = insertion
+          if not any(
+              "streamConfig.status = 0" in line
+              for line in lines
+          ):
+              lines[
+                  closing + 1:closing + 1
+              ] = insertion
 
           save(
               path,
@@ -348,23 +328,19 @@ jobs:
 
           print("OK 5: runtime state recovery")
 
-          # ==================================================
           # 6. 外部链接只允许 http / https
-          # ==================================================
-
           path = "src/main/index.ts"
           text = load(path)
 
-          marker = (
-              "async function checkUpdate() {"
-          )
+          if "function openSafeExternalUrl(" not in text:
+              marker = "async function checkUpdate() {"
 
-          if marker not in text:
-              raise RuntimeError(
-                  "找不到 checkUpdate"
-              )
+              if marker not in text:
+                  raise RuntimeError(
+                      "找不到 checkUpdate"
+                  )
 
-          helper = """function openSafeExternalUrl(
+              helper = """function openSafeExternalUrl(
             value: string
           ) {
             try {
@@ -389,72 +365,105 @@ jobs:
 
           async function checkUpdate() {"""
 
-          text = text.replace(
-              marker,
-              helper,
-              1
+              text = text.replace(
+                  marker,
+                  helper,
+                  1
+              )
+
+          window_pattern = re.compile(
+              r"""(?ms)^(\s*)mainWindow\.webContents\.setWindowOpenHandler\(\(details\)\s*=>\s*\{\s*
+              shell\.openExternal\(details\.url\)\s*
+              return\s*\{\s*action:\s*['"]deny['"]\s*\}\s*
+              \}\)"""
           )
 
-          old = """  mainWindow.webContents.setWindowOpenHandler((details) => {
-            shell.openExternal(details.url)
-            return { action: 'deny' }
-          })"""
+          def replace_window(match):
+              indent = match.group(1)
+              return (
+                  f"{indent}mainWindow.webContents.setWindowOpenHandler((details) => {{\n"
+                  f"{indent}  openSafeExternalUrl(\n"
+                  f"{indent}    details.url\n"
+                  f"{indent}  )\n\n"
+                  f"{indent}  return {{\n"
+                  f"{indent}    action: 'deny'\n"
+                  f"{indent}  }}\n"
+                  f"{indent}}})"
+              )
 
-          new = """  mainWindow.webContents.setWindowOpenHandler((details) => {
-            openSafeExternalUrl(
-              details.url
-            )
+          handler_pos = text.find("setWindowOpenHandler")
 
-            return {
-              action: 'deny'
-            }
-          })"""
-
-          if old not in text:
+          if handler_pos < 0:
               raise RuntimeError(
-                  "找不到 windowOpenHandler"
+                  "找不到 setWindowOpenHandler"
               )
 
-          text = text.replace(
-              old,
-              new,
-              1
+          handler_block = text[
+              handler_pos:handler_pos + 500
+          ]
+
+          if "openSafeExternalUrl(" not in handler_block:
+              text, count = window_pattern.subn(
+                  replace_window,
+                  text,
+                  count=1
+              )
+
+              if count == 0:
+                  raise RuntimeError(
+                      "找不到 windowOpenHandler"
+                  )
+
+          nav_pattern = re.compile(
+              r"""(?ms)^(\s*)ipcMain\.handle\(\s*
+              NAV_BY_DEFAULT_BROWSER\s*,\s*
+              \(_,\s*url:\s*string\)\s*=>\s*\{\s*
+              shell\.openExternal\(url\)\s*
+              \}\)"""
           )
 
-          old = """  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
-            shell.openExternal(url)
-          })"""
-
-          new = """  ipcMain.handle(
-            NAV_BY_DEFAULT_BROWSER,
-            (_, url: string) => {
-              return openSafeExternalUrl(
-                url
-              )
-            }
-          )"""
-
-          if old not in text:
-              raise RuntimeError(
-                  "找不到 NAV_BY_DEFAULT_BROWSER"
+          def replace_nav(match):
+              indent = match.group(1)
+              return (
+                  f"{indent}ipcMain.handle(\n"
+                  f"{indent}  NAV_BY_DEFAULT_BROWSER,\n"
+                  f"{indent}  (_, url: string) => {{\n"
+                  f"{indent}    return openSafeExternalUrl(\n"
+                  f"{indent}      url\n"
+                  f"{indent}    )\n"
+                  f"{indent}  }}\n"
+                  f"{indent})"
               )
 
-          text = text.replace(
-              old,
-              new,
-              1
+          nav_pos = text.find(
+              "ipcMain.handle(NAV_BY_DEFAULT_BROWSER"
           )
 
-          # ==================================================
+          if nav_pos >= 0:
+              nav_block = text[
+                  nav_pos:nav_pos + 500
+              ]
+
+              if "openSafeExternalUrl(" not in nav_block:
+                  text, count = nav_pattern.subn(
+                      replace_nav,
+                      text,
+                      count=1
+                  )
+
+                  if count == 0:
+                      raise RuntimeError(
+                          "找不到 NAV_BY_DEFAULT_BROWSER"
+                      )
+
           # 7. WebDAV 串行上传
-          # ==================================================
+          if "function enqueueWebdavUpload(" not in text:
+              marker = (
+                  "export const writeLog = "
+                  "writeLogWrapper(app.getPath('userData'))"
+              )
 
-          marker = (
-              "export const writeLog = "
-              "writeLogWrapper(app.getPath('userData'))"
-          )
-
-          queue = """export const writeLog = writeLogWrapper(app.getPath('userData'))
+              queue = """export const writeLog = writeLogWrapper(app.getPath('userData'))
 
           let webdavUploadQueue:
             Promise<void> =
@@ -487,45 +496,65 @@ jobs:
             return task
           }"""
 
-          if marker not in text:
-              raise RuntimeError(
-                  "找不到 writeLog"
+              if marker not in text:
+                  raise RuntimeError(
+                      "找不到 writeLog"
+                  )
+
+              text = text.replace(
+                  marker,
+                  queue,
+                  1
               )
 
-          text = text.replace(
-              marker,
-              queue,
-              1
+          upload_pattern = re.compile(
+              r"""(?ms)^(\s*)ipcMain\.handle\(\s*
+              UPLOAD_WEBDAV\s*,\s*
+              async\s*\(_,\s*request\)\s*=>\s*\{\s*
+              return\s+await\s+uploadWebdav\(\s*
+              request\s*
+              \)\s*
+              \}\s*
+              \)"""
           )
 
-          old = """  ipcMain.handle(
-            UPLOAD_WEBDAV,
-            async (_, request) => {
-              return await uploadWebdav(
-                request
-              )
-            }
-          )"""
-
-          new = """  ipcMain.handle(
-            UPLOAD_WEBDAV,
-            async (_, request) => {
-              return await enqueueWebdavUpload(
-                request
-              )
-            }
-          )"""
-
-          if old not in text:
-              raise RuntimeError(
-                  "找不到 UPLOAD_WEBDAV"
+          def replace_upload(match):
+              indent = match.group(1)
+              return (
+                  f"{indent}ipcMain.handle(\n"
+                  f"{indent}  UPLOAD_WEBDAV,\n"
+                  f"{indent}  async (_, request) => {{\n"
+                  f"{indent}    return await enqueueWebdavUpload(\n"
+                  f"{indent}      request\n"
+                  f"{indent}    )\n"
+                  f"{indent}  }}\n"
+                  f"{indent})"
               )
 
-          text = text.replace(
-              old,
-              new,
-              1
+          upload_pos = text.find(
+              "ipcMain.handle("
           )
+
+          webdav_pos = text.find(
+              "UPLOAD_WEBDAV"
+          )
+
+          if webdav_pos >= 0:
+              upload_block = text[
+                  webdav_pos:webdav_pos + 600
+              ]
+
+              if "enqueueWebdavUpload(" not in upload_block:
+                  text, count = upload_pattern.subn(
+                      replace_upload,
+                      text,
+                      count=1
+                  )
+
+                  if count == 0:
+                      raise RuntimeError(
+                          "找不到 UPLOAD_WEBDAV"
+                      )
 
           save(
               path,
@@ -534,25 +563,23 @@ jobs:
 
           print("OK 6-7: main process")
 
-          # ==================================================
           # 8. WebDAV HTTPS 校验
-          # ==================================================
-
           path = "src/main/webdav.ts"
           text = load(path)
 
-          marker = "const cleanBaseUrl = ("
+          if "const validateWebdavUrl = (" not in text:
+              marker = "const cleanBaseUrl = ("
 
-          position = text.find(
-              marker
-          )
-
-          if position < 0:
-              raise RuntimeError(
-                  "找不到 cleanBaseUrl"
+              position = text.find(
+                  marker
               )
 
-          validator = """const validateWebdavUrl = (
+              if position < 0:
+                  raise RuntimeError(
+                      "找不到 cleanBaseUrl"
+                  )
+
+              validator = """const validateWebdavUrl = (
             value: string
           ) => {
             const trimmed =
@@ -585,11 +612,11 @@ jobs:
 
           """
 
-          text = (
-              text[:position]
-              + validator
-              + text[position:]
-          )
+              text = (
+                  text[:position]
+                  + validator
+                  + text[position:]
+              )
 
           upload_pos = text.find(
               "export async function uploadWebdav("
@@ -600,28 +627,32 @@ jobs:
                   "找不到 uploadWebdav"
               )
 
-          request_pos = text.find(
-              "      request.url,",
-              upload_pos
-          )
+          upload_slice = text[
+              upload_pos:upload_pos + 2000
+          ]
 
-          if request_pos < 0:
-              raise RuntimeError(
-                  "找不到 uploadWebdav request.url"
+          if "validateWebdavUrl(" not in upload_slice:
+              request_pos = text.find(
+                  "request.url",
+                  upload_pos
               )
 
-          text = (
-              text[:request_pos]
-              + """      validateWebdavUrl(
-                request.url
-              ),"""
-              + text[
+              if request_pos < 0:
+                  raise RuntimeError(
+                      "找不到 uploadWebdav request.url"
+                  )
+
+              start = request_pos
+              end = (
                   request_pos
-                  + len(
-                      "      request.url,"
-                  ):
-              ]
-          )
+                  + len("request.url")
+              )
+
+              text = (
+                  text[:start]
+                  + "validateWebdavUrl(request.url)"
+                  + text[end:]
+              )
 
           test_pos = text.find(
               "export async function testWebdav("
@@ -632,24 +663,29 @@ jobs:
                   "找不到 testWebdav"
               )
 
-          try_pos = text.find(
-              "  try {",
-              test_pos
-          )
+          test_slice = text[
+              test_pos:test_pos + 1500
+          ]
 
-          if try_pos < 0:
-              raise RuntimeError(
-                  "找不到 testWebdav try"
+          if "validateWebdavUrl(" not in test_slice:
+              try_pos = text.find(
+                  "  try {",
+                  test_pos
               )
 
-          insert_at = (
-              try_pos
-              + len("  try {")
-          )
+              if try_pos < 0:
+                  raise RuntimeError(
+                      "找不到 testWebdav try"
+                  )
 
-          text = (
-              text[:insert_at]
-              + """
+              insert_at = (
+                  try_pos
+                  + len("  try {")
+              )
+
+              text = (
+                  text[:insert_at]
+                  + """
               config = {
                 ...config,
                 url:
@@ -657,8 +693,8 @@ jobs:
                     config.url
                   )
               }"""
-              + text[insert_at:]
-          )
+                  + text[insert_at:]
+              )
 
           save(
               path,
@@ -666,10 +702,7 @@ jobs:
           )
 
           print("OK 8: WebDAV HTTPS")
-
-          print(
-              "ALL FIXES APPLIED"
-          )
+          print("ALL FIXES APPLIED")
           PY
 
       - name: Verify source
@@ -742,8 +775,12 @@ jobs:
             src/main/crawler/plugins/douyin.js \
             src/renderer/src/store/useStreamConfigStore.ts
 
-          git commit \
-            -m "fix: improve V2.10 stability"
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+          else
+            git commit \
+              -m "fix: improve V2.10 stability"
+          fi
 
       - name: Push fix branch
         shell: bash
@@ -768,7 +805,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# V2.10 Stability Fix V5"
+            echo "# V2.10 Stability Fix V6"
             echo ""
             echo "✅ 抖音完整登录 Cookie"
             echo "✅ 登录状态判断"
