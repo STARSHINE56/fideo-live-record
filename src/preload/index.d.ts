@@ -45,10 +45,53 @@ startStreamRecord: (streamConfig: string) => Promise<{ code: number }>
         cookieCount: number
       }>
 
-      startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>
+      testWebdav: (config: {
+        url: string
+        username: string
+        password: string
+        remoteRoot?: string
+      }) => Promise<{
+        success: boolean
+        message: string
+      }>
+
+      uploadWebdav: (request: {
+        url: string
+        username: string
+        password: string
+        remoteRoot?: string
+        streamerName: string
+        files: IRecordedFile[]
+        deleteAfterUpload?: boolean
+        retryTimes?: number
+      }) => Promise<{
+        success: boolean
+        results: Array<{
+          path: string
+          cloudName: string
+          success: boolean
+          deleted: boolean
+          message?: string
+        }>
+      }>
+
+      startFrpcProcess: (
+        code: string
+      ) => Promise<{
+        status: boolean
+        code?: string
+        port?: number
+      }>
       stopFrpcProcess: () => void
 
-      onStreamRecordEnd: (callback: (id: string, code: number, errMsg?: string) => void) => void
+      onStreamRecordEnd: (
+        callback: (
+          id: string,
+          code: number,
+          errMsg?: string,
+          files?: IRecordedFile[]
+        ) => void
+      ) => void
       onFFmpegProgressInfo: (callback: (info: IFfmpegProgressInfo) => void) => void
       onDownloadDepProgressInfo: (callback: (info: IDownloadDepProgressInfo) => void) => void
       onUserCloseWindow: (callback: () => void) => void

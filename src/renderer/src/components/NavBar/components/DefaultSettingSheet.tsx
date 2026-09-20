@@ -12,12 +12,20 @@ import { useDefaultSettingsStore } from '@renderer/store/useDefaultSettingsStore
 import { useEffect, useState } from 'react'
 import { useToast } from '@renderer/hooks/useToast'
 import { testXizhiPushNotification } from '@renderer/lib/utils'
+import CloudStorageSettings from './CloudStorageSettings'
 
 const formSchema = z.object({
   directory: z.string(),
   lang: z.string(),
   xizhiKey: z.optional(z.string()),
-  logsDir: z.optional(z.string())
+  logsDir: z.optional(z.string()),
+  webdavEnabled: z.optional(z.boolean()),
+  webdavUrl: z.optional(z.string()),
+  webdavUsername: z.optional(z.string()),
+  webdavPassword: z.optional(z.string()),
+  webdavRemoteRoot: z.optional(z.string()),
+  webdavDeleteAfterUpload: z.optional(z.boolean()),
+  webdavRetryTimes: z.optional(z.number())
 })
 
 interface StreamConfigSheetProps {
@@ -336,6 +344,10 @@ export default function DefaultSettingSheet(props: StreamConfigSheetProps) {
                     </FormItem>
                   )}
                 />
+                <CloudStorageSettings
+                  form={form}
+                />
+
                 <FormField
                   control={form.control}
                   name="logsDir"

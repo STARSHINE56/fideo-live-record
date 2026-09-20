@@ -39,7 +39,9 @@ import {
   USER_CLOSE_WINDOW,
   DOUYIN_LOGIN,
   DOUYIN_LOGOUT,
-  DOUYIN_LOGIN_STATUS
+  DOUYIN_LOGIN_STATUS,
+  TEST_WEBDAV,
+  UPLOAD_WEBDAV
 } from '../const'
 import { getLiveUrls, getRoomInfo } from './crawler/index'
 import { FFMPEG_ERROR_CODE, SUCCESS_CODE } from '../code'
@@ -68,6 +70,11 @@ import {
   isDouyinUrl,
   openDouyinLoginWindow
 } from './douyin-session'
+
+import {
+  testWebdav,
+  uploadWebdav
+} from './webdav'
 
 export const writeLog = writeLogWrapper(app.getPath('userData'))
 
@@ -365,6 +372,24 @@ app.whenReady().then(async () => {
     }
   )
 
+  ipcMain.handle(
+    TEST_WEBDAV,
+    async (_, config) => {
+      return await testWebdav(
+        config
+      )
+    }
+  )
+
+  ipcMain.handle(
+    UPLOAD_WEBDAV,
+    async (_, request) => {
+      return await uploadWebdav(
+        request
+      )
+    }
+  )
+
   ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
     shell.openExternal(url)
   })
@@ -424,8 +449,19 @@ app.whenReady().then(async () => {
   const { code: recordStreamCode } = await recordStream(
       streamConfig,
       writeLog,
-      (code: number, errMsg?: string) => {
-        win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)
+      (
+        code: number,
+        errMsg?: string,
+        files?: IRecordedFile[]
+      ) => {
+        win?.webContents.send(
+          STREAM_RECORD_END,
+          id,
+          code,
+          errMsg,
+          files
+        )
+
         clearTimerWhenAllFfmpegProcessEnd()
       }
     )

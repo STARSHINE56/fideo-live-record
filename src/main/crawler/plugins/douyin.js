@@ -1262,6 +1262,13 @@ function findDouyinNestedValue(
 }
 
 
+const DOUYIN_PROFILE_CACHE_MS =
+  45 * 1000
+
+const douyinProfileCache =
+  new Map()
+
+
 function buildDouyinProfileParams(
   secUid
 ) {
@@ -1363,6 +1370,20 @@ async function getDouyinAnchorProfile(
     )
   }
 
+  const cached =
+    douyinProfileCache.get(
+      secUid
+    )
+
+  if (
+    cached &&
+    Date.now() -
+      cached.time <
+      DOUYIN_PROFILE_CACHE_MS
+  ) {
+    return cached.profile
+  }
+
   const profileUrl =
     'https://www.douyin.com/user/' +
     encodeURIComponent(
@@ -1377,32 +1398,9 @@ async function getDouyinAnchorProfile(
       PC_USER_AGENT
   }
 
-  let generatedCookies =
+  const finalCookie =
+    cookie ||
     ''
-
-  try {
-    const bootstrap =
-      await request(
-        'https://www.douyin.com/',
-        {
-          headers,
-          proxy
-        }
-      )
-
-    generatedCookies =
-      joinSetCookies(
-        bootstrap
-      )
-  } catch {
-  }
-
-  const finalCookie = [
-    generatedCookies,
-    cookie
-  ]
-    .filter(Boolean)
-    .join('; ')
 
   const params =
     buildDouyinProfileParams(
@@ -1554,12 +1552,24 @@ async function getDouyinAnchorProfile(
     }
   )
 
-  return {
+  const profile = {
     nickname,
     live,
     webRid,
     secUid
   }
+
+  douyinProfileCache.set(
+    secUid,
+    {
+      time:
+        Date.now(),
+
+      profile
+    }
+  )
+
+  return profile
 }
 
 

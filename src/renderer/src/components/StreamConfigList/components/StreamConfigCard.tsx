@@ -48,6 +48,24 @@ export default function StreamConfigCard({ streamConfig }: StreamConfigCardProps
             {streamConfig.status !== StreamStatus.NOT_STARTED && (
               <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
             )}
+
+            {streamConfig.cloudUploadStatus === 'uploading' && (
+              <Badge variant="outline">
+                正在上传云盘
+              </Badge>
+            )}
+
+            {streamConfig.cloudUploadStatus === 'success' && (
+              <Badge variant="outline">
+                已上传
+              </Badge>
+            )}
+
+            {streamConfig.cloudUploadStatus === 'error' && (
+              <Badge variant="outline">
+                上传失败
+              </Badge>
+            )}
           </div>
           <OperationBar streamConfig={streamConfig} />
         </CardTitle>

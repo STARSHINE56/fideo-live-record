@@ -38,6 +38,9 @@ const formSchema = z.object({
     autoRecord: z.boolean()
 })
 
+type StreamFormField =
+  keyof z.infer<typeof formSchema>
+
 const defaultStreamConfig: IStreamConfig = {
   id: '',
   title: '',
@@ -60,8 +63,11 @@ function validStreamConfigData(
   streamConfigData: IStreamConfig,
   streamConfigList: IStreamConfig[],
   defaultStreamConfigData: IStreamConfig | null,
-  validFields = Object.keys(streamConfigData) as (keyof IStreamConfig)[]
-): [true] | [false, keyof IStreamConfig, string] {
+  validFields =
+    Object.keys(
+      streamConfigData
+    ) as StreamFormField[]
+): [true] | [false, StreamFormField, string] {
   const { title, roomUrl, filename, directory, interval, proxy, segmentTime } = streamConfigData
 
   const validTitleFn = () => {
@@ -185,7 +191,11 @@ export default function StreamConfigSheet(props: StreamConfigSheetProps) {
   const [liveUrls, setLiveUrls] = useState(form.getValues('liveUrls'))
 
   useEffect(() => {
-    ;(Object.keys(defaultStreamConfig) as (keyof IStreamConfig)[]).forEach((key) =>
+    ;(
+      Object.keys(
+        defaultStreamConfig
+      ) as StreamFormField[]
+    ).forEach((key) =>
       form.register(key, {
         onBlur: () => {
           const formValues = form.getValues()

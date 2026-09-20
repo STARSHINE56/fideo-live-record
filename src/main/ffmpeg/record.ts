@@ -138,6 +138,93 @@ async function convert(
   }
 }
 
+async function findCompletedRecordFiles(
+  sourcePath: string
+): Promise<string[]> {
+  if (
+    await checkFileExist(
+      sourcePath
+    )
+  ) {
+    const stat =
+      fs.statSync(
+        sourcePath
+      )
+
+    if (
+      stat.isDirectory()
+    ) {
+      return fs
+        .readdirSync(
+          sourcePath
+        )
+        .filter(
+          (file) =>
+            /\.mp4$/i.test(
+              file
+            )
+        )
+        .sort()
+        .map(
+          (file) =>
+            path.join(
+              sourcePath,
+              file
+            )
+        )
+    }
+  }
+
+  const mp4 =
+    sourcePath.replace(
+      /\.flv$/i,
+      '.mp4'
+    )
+
+  if (
+    await checkFileExist(
+      mp4
+    )
+  ) {
+    return [
+      mp4
+    ]
+  }
+
+  return []
+}
+
+function makeRecordedFiles(
+  files: string[],
+  cloudTime: string
+): IRecordedFile[] {
+  return files.map(
+    (
+      file,
+      index
+    ) => {
+      const suffix =
+        files.length > 1
+          ? `_${String(
+              index + 1
+            ).padStart(
+              3,
+              '0'
+            )}`
+          : ''
+
+      return {
+        path:
+          file,
+
+        cloudName:
+          `${cloudTime}${suffix}.mp4`
+      }
+    }
+  )
+}
+
+
 async function detectStreamResolution(streamConfig: IStreamConfig) {
   const { liveUrls, line, cookie, proxy, id } = streamConfig
 
@@ -206,7 +293,11 @@ async function detectStreamResolution(streamConfig: IStreamConfig) {
 export async function recordStream(
   streamConfig: IStreamConfig,
   writeLog: (title: string, content: string) => void,
-  cb?: (code: number, errMsg?: string) => void
+  cb?: (
+    code: number,
+    errMsg?: string,
+    files?: IRecordedFile[]
+  ) => void
 ) {
   log('start record stream')
   let _resolve!: (
@@ -244,8 +335,24 @@ export async function recordStream(
   const secondSegmentTime = Number(segmentTime) * 60
   const isSegmentMode = secondSegmentTime > 0
 
-  const time = dayjs().format('YYYY.MM.DD-HH.mm.ss')
-  const baseOutput = path.resolve(directory, `${filename}-${time}`)
+  const now =
+    dayjs()
+
+  const time =
+    now.format(
+      'YYYY.MM.DD-HH.mm.ss'
+    )
+
+  const cloudTime =
+    now.format(
+      'YYYY-MM-DD_HH-mm-ss'
+    )
+
+  const baseOutput =
+    path.resolve(
+      directory,
+      `${filename}-${time}`
+    )
   const output = isSegmentMode ? path.resolve(baseOutput, `%03d`) : baseOutput
   const convertSource = isSegmentMode ? baseOutput : output + FLV_FLAG
 
@@ -339,9 +446,32 @@ export async function recordStream(
 
       killRecordStreamFfmpegProcess(id)
 
-      cb?.(SUCCESS_CODE)
-      await convert(convertSource, writeLog.bind(null, title), convertToMP4)
-      cb?.(SUCCESS_CODE)
+      cb?.(
+        SUCCESS_CODE
+      )
+
+      await convert(
+        convertSource,
+        writeLog.bind(
+          null,
+          title
+        ),
+        convertToMP4
+      )
+
+      const finishedFiles =
+        await findCompletedRecordFiles(
+          convertSource
+        )
+
+      cb?.(
+        SUCCESS_CODE,
+        undefined,
+        makeRecordedFiles(
+          finishedFiles,
+          cloudTime
+        )
+      )
     })
     .on('error', async (error) => {
       const errMsg = error.message
@@ -365,9 +495,33 @@ export async function recordStream(
         errCode = FFMPEG_ERROR_CODE.USER_KILL_PROCESS
       }
 
-      cb?.(errCode, errMsg)
-      await convert(convertSource, writeLog.bind(null, title), convertToMP4)
-      cb?.(errCode, errMsg)
+      cb?.(
+        errCode,
+        errMsg
+      )
+
+      await convert(
+        convertSource,
+        writeLog.bind(
+          null,
+          title
+        ),
+        convertToMP4
+      )
+
+      const finishedFiles =
+        await findCompletedRecordFiles(
+          convertSource
+        )
+
+      cb?.(
+        errCode,
+        errMsg,
+        makeRecordedFiles(
+          finishedFiles,
+          cloudTime
+        )
+      )
     })
     .save(output + FLV_FLAG)
   return p

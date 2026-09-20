@@ -30,10 +30,30 @@ export function useXizhiToPushNotification(options: {
   title: string
   content?: string
 }) {
-  const isHide = document.hidden
-  if (!isHide) return
-  const titleAndContent = options.content ? `${options.title} - ${options.content}` : options.title
-  fetch(`${options.key}?title=${encodeURIComponent(titleAndContent)}`)
+  const key =
+    options.key.trim()
+
+  if (!key) {
+    return
+  }
+
+  const titleAndContent =
+    options.content
+      ? `${options.title} - ${options.content}`
+      : options.title
+
+  const separator =
+    key.includes('?')
+      ? '&'
+      : '?'
+
+  void fetch(
+    `${key}${separator}title=${encodeURIComponent(
+      titleAndContent
+    )}`
+  ).catch(
+    () => undefined
+  )
 }
 
 export async function testXizhiPushNotification(options: {

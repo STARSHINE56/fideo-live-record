@@ -74,6 +74,22 @@ export default function OperationBar(
   } =
     props
 
+  const isDouyinProfile =
+    /^https?:\/\/(www\.)?douyin\.com\/user\//i.test(
+      streamConfig.roomUrl
+    )
+
+  const effectiveMonitorInterval =
+    isDouyinProfile
+      ? Math.max(
+          60,
+          Number(
+            streamConfig.interval
+          ) ||
+            60
+        )
+      : streamConfig.interval
+
   const {
     t
   } =
@@ -150,7 +166,7 @@ export default function OperationBar(
           },
 
           1000 *
-            streamConfig.interval
+            effectiveMonitorInterval
         )
     }
 
@@ -502,7 +518,7 @@ export default function OperationBar(
             },
 
             1000 *
-              streamConfig.interval
+              effectiveMonitorInterval
           )
 
         if (isFirst) {

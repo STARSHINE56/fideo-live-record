@@ -71,7 +71,7 @@ export default function StreamConfigList() {
       updateFfmpegProgressInfo(progressInfo)
     })
 
-    window.api.onStreamRecordEnd(async (id, code, errMsg) => {
+    window.api.onStreamRecordEnd(async (id, code, errMsg, recordedFiles) => {
       const { streamConfigList, updateStreamConfig } = useStreamConfigStore.getState()
       const xiZhiKey = useDefaultSettingsStore.getState().defaultSettingsConfig.xizhiKey
       const index = streamConfigList.findIndex((streamConfig) => streamConfig.id === id)
@@ -143,10 +143,196 @@ export default function StreamConfigList() {
         return
       }
 
-      // 第二次回调，删除当前title
+      // 第二次回调，处理最终录像文件
       alreadyCallbackOneTimeSet.delete(id)
 
-      unknownErrorRetryTimesMap[id] = unknownErrorRetryTimesMap[id] || 0
+      const webdavConfig =
+        useDefaultSettingsStore
+          .getState()
+          .defaultSettingsConfig
+
+      const shouldUpload =
+        Boolean(
+          webdavConfig
+            .webdavEnabled
+        ) &&
+        Boolean(
+          webdavConfig
+            .webdavUrl
+            ?.trim()
+        ) &&
+        Boolean(
+          webdavConfig
+            .webdavUsername
+            ?.trim()
+        ) &&
+        Boolean(
+          webdavConfig
+            .webdavPassword
+        ) &&
+        Boolean(
+          recordedFiles
+            ?.length
+        )
+
+      if (
+        shouldUpload
+      ) {
+        const current =
+          useStreamConfigStore
+            .getState()
+            .streamConfigList
+            .find(
+              (item) =>
+                item.id ===
+                streamConfig.id
+            )
+
+        if (
+          current
+        ) {
+          await updateStreamConfig(
+            {
+              ...current,
+
+              cloudUploadStatus:
+                'uploading'
+            },
+
+            current.id
+          )
+        }
+
+        void (async () => {
+          try {
+            const result =
+              await window.api
+                .uploadWebdav({
+                  url:
+                    webdavConfig
+                      .webdavUrl!
+                      .trim(),
+
+                  username:
+                    webdavConfig
+                      .webdavUsername!
+                      .trim(),
+
+                  password:
+                    webdavConfig
+                      .webdavPassword!,
+
+                  remoteRoot:
+                    webdavConfig
+                      .webdavRemoteRoot ||
+                    '/',
+
+                  streamerName:
+                    streamConfig.title,
+
+                  files:
+                    recordedFiles!,
+
+                  deleteAfterUpload:
+                    Boolean(
+                      webdavConfig
+                        .webdavDeleteAfterUpload
+                    ),
+
+                  retryTimes:
+                    webdavConfig
+                      .webdavRetryTimes ||
+                    3
+                })
+
+            const latest =
+              useStreamConfigStore
+                .getState()
+                .streamConfigList
+                .find(
+                  (item) =>
+                    item.id ===
+                    streamConfig.id
+                )
+
+            if (
+              latest
+            ) {
+              await useStreamConfigStore
+                .getState()
+                .updateStreamConfig(
+                  {
+                    ...latest,
+
+                    cloudUploadStatus:
+                      result.success
+                        ? 'success'
+                        : 'error'
+                  },
+
+                  latest.id
+                )
+            }
+
+            toast({
+              title:
+                streamConfig.title,
+
+              description:
+                result.success
+                  ? '云端录像上传成功'
+                  : '云端录像上传失败，本地录像已保留',
+
+              variant:
+                result.success
+                  ? undefined
+                  : 'destructive'
+            })
+          } catch {
+            const latest =
+              useStreamConfigStore
+                .getState()
+                .streamConfigList
+                .find(
+                  (item) =>
+                    item.id ===
+                    streamConfig.id
+                )
+
+            if (
+              latest
+            ) {
+              await useStreamConfigStore
+                .getState()
+                .updateStreamConfig(
+                  {
+                    ...latest,
+
+                    cloudUploadStatus:
+                      'error'
+                  },
+
+                  latest.id
+                )
+            }
+
+            toast({
+              title:
+                streamConfig.title,
+
+              description:
+                '云端录像上传失败，本地录像已保留',
+
+              variant:
+                'destructive'
+            })
+          }
+        })()
+      }
+
+      unknownErrorRetryTimesMap[id] =
+        unknownErrorRetryTimesMap[id] ||
+        0
       unknownErrorRetryTimesMap[id] += 1
 
       if (!message) {

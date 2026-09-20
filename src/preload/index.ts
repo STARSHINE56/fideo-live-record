@@ -24,7 +24,9 @@ import {
   USER_CLOSE_WINDOW,
   DOUYIN_LOGIN,
   DOUYIN_LOGOUT,
-  DOUYIN_LOGIN_STATUS
+  DOUYIN_LOGIN_STATUS,
+  TEST_WEBDAV,
+  UPLOAD_WEBDAV
 } from '../const'
 
 // Custom APIs for renderer
@@ -62,13 +64,64 @@ navByDefaultBrowser: (url: string) => ipcRenderer.invoke(NAV_BY_DEFAULT_BROWSER,
       DOUYIN_LOGIN_STATUS
     ),
 
-  startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),
+  testWebdav: (config: {
+    url: string
+    username: string
+    password: string
+    remoteRoot?: string
+  }) =>
+    ipcRenderer.invoke(
+      TEST_WEBDAV,
+      config
+    ),
+
+  uploadWebdav: (request: {
+    url: string
+    username: string
+    password: string
+    remoteRoot?: string
+    streamerName: string
+    files: IRecordedFile[]
+    deleteAfterUpload?: boolean
+    retryTimes?: number
+  }) =>
+    ipcRenderer.invoke(
+      UPLOAD_WEBDAV,
+      request
+    ),
+
+  startFrpcProcess: (code: string) =>
+    ipcRenderer.invoke(
+      START_FRPC_PROCESS,
+      code
+    ),
   stopFrpcProcess: () => ipcRenderer.invoke(STOP_FRPC_PROCESS),
 
-  onStreamRecordEnd: (callback: (title: string, code: number, errMsg?: string) => void) => {
-    ipcRenderer.on(STREAM_RECORD_END, (_, title, code, errMsg) => {
-      callback(title, code, errMsg)
-    })
+  onStreamRecordEnd: (
+    callback: (
+      title: string,
+      code: number,
+      errMsg?: string,
+      files?: IRecordedFile[]
+    ) => void
+  ) => {
+    ipcRenderer.on(
+      STREAM_RECORD_END,
+      (
+        _,
+        title,
+        code,
+        errMsg,
+        files
+      ) => {
+        callback(
+          title,
+          code,
+          errMsg,
+          files
+        )
+      }
+    )
   },
   onFFmpegProgressInfo: (callback: (info: Record<string, IFfmpegProgressInfo>) => void) => {
     ipcRenderer.on(FFMPEG_PROGRESS_INFO, (_, info) => {
