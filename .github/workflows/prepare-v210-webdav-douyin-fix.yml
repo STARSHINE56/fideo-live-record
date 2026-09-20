@@ -1,4 +1,4 @@
-name: Prepare V2.10 WebDAV Douyin Fix V5
+name: Prepare V2.10 WebDAV Douyin Fix V6
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-v210-webdav-douyin-fix-v5
+  group: prepare-v210-webdav-douyin-fix-v6
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v5
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v6
 
 jobs:
   prepare:
-    name: Prepare V2.10 V5
+    name: Prepare V2.10 V6
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKUP_BRANCH="backup-v210-v5-${GITHUB_RUN_ID}"
+          BACKUP_BRANCH="backup-v210-v6-${GITHUB_RUN_ID}"
 
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
@@ -1687,10 +1687,10 @@ jobs:
           ):
               pattern = re.compile(
                   r"""  onStreamRecordEnd:\s*\(callback:\s*\(title:\s*string,\s*code:\s*number,\s*errMsg\?:\s*string\)\s*=>\s*void\)\s*=>\s*\{\s*
-\s*ipcRenderer\.on\(STREAM_RECORD_END,\s*\(_,\s*title,\s*code,\s*errMsg\)\s*=>\s*\{\s*
-\s*callback\(title,\s*code,\s*errMsg\)\s*
-\s*\}\)\s*
-\s*\},""",
+                  \s*ipcRenderer\.on\(STREAM_RECORD_END,\s*\(_,\s*title,\s*code,\s*errMsg\)\s*=>\s*\{\s*
+                  \s*callback\(title,\s*code,\s*errMsg\)\s*
+                  \s*\}\)\s*
+                  \s*\},""",
                   re.S
               )
 
@@ -2785,7 +2785,7 @@ jobs:
 
 
           print(
-              "V2.10 V5 patch finished."
+              "V2.10 V6 patch finished."
           )
           PY
 
@@ -2926,7 +2926,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# Fideo V2.10 V5"
+            echo "# Fideo V2.10 V6"
             echo ""
             echo "## WebDAV"
             echo "✅ 小蓝云盘 WebDAV"
