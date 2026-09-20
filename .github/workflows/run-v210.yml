@@ -36,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -73,8 +74,7 @@ jobs:
 
           test -s scripts/v210_patch.py
 
-          echo "Patch script loaded from main:"
-          wc -l scripts/v210_patch.py
+          echo "Patch script loaded."
 
       - name: Install dependencies
         run: npm ci
@@ -83,14 +83,100 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           python3 -m py_compile scripts/v210_patch.py
+
           echo "Python syntax check passed."
 
       - name: Apply V2.10 patch
         shell: bash
         run: |
           set -euo pipefail
+
           python3 scripts/v210_patch.py
+
+      - name: Fix StreamConfigSheet form typing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "src/renderer/src/components/StreamConfigSheet.tsx"
+          )
+
+          text = path.read_text(
+              encoding="utf-8"
+          )
+
+          schema_marker = """})
+
+          const defaultStreamConfig"""
+
+          schema_replacement = """})
+
+          type StreamFormField =
+            keyof z.infer<typeof formSchema>
+
+          const defaultStreamConfig"""
+
+          if (
+              "type StreamFormField" not in text
+          ):
+              if (
+                  schema_marker not in text
+              ):
+                  raise RuntimeError(
+                      "formSchema marker not found"
+                  )
+
+              text = text.replace(
+                  schema_marker,
+                  schema_replacement,
+                  1
+              )
+
+          text = text.replace(
+              """validFields = Object.keys(streamConfigData) as (keyof IStreamConfig)[]""",
+              """validFields =
+              Object.keys(
+                streamConfigData
+              ) as StreamFormField[]"""
+          )
+
+          text = text.replace(
+              """[true] | [false, keyof IStreamConfig, string]""",
+              """[true] | [false, StreamFormField, string]"""
+          )
+
+          text = text.replace(
+              """(Object.keys(defaultStreamConfig) as (keyof IStreamConfig)[])""",
+              """(
+                Object.keys(
+                  defaultStreamConfig
+                ) as StreamFormField[]
+              )"""
+          )
+
+          if (
+              "keyof IStreamConfig)[]"
+              in text
+          ):
+              raise RuntimeError(
+                  "Old form key typing still exists"
+              )
+
+          path.write_text(
+              text,
+              encoding="utf-8"
+          )
+
+          print(
+              "StreamConfigSheet form typing fixed."
+          )
+          PY
 
       - name: Verify V2.10 files
         shell: bash
@@ -112,7 +198,8 @@ jobs:
           grep -q "testWebdav" src/main/index.ts
           grep -q "uploadWebdav" src/main/index.ts
 
-          grep -q "YYYY-MM-DD_HH-mm-ss" src/main/ffmpeg/record.ts
+          grep -q "YYYY-MM-DD_HH-mm-ss" \
+            src/main/ffmpeg/record.ts
 
           grep -q "DOUYIN_PROFILE_CACHE_MS" \
             src/main/crawler/plugins/douyin.js
@@ -125,6 +212,9 @@ jobs:
 
           grep -q "正在上传云盘" \
             src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx
+
+          grep -q "type StreamFormField" \
+            src/renderer/src/components/StreamConfigSheet.tsx
 
           if grep -q \
             "const isHide = document.hidden" \
@@ -182,6 +272,7 @@ jobs:
             src/renderer/src/store/useDefaultSettingsStore.ts \
             src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx \
             src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx \
+            src/renderer/src/components/StreamConfigSheet.tsx \
             src/renderer/src/components/StreamConfigList/StreamConfigList.tsx \
             src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
@@ -219,13 +310,14 @@ jobs:
           {
             echo "# V2.10"
             echo ""
-            echo "✅ 从 main 正确加载补丁脚本"
-            echo "✅ Python 语法检查"
-            echo "✅ V2.10 源码修改"
-            echo "✅ TypeScript 检查"
-            echo "✅ 应用构建"
-            echo "✅ git diff 检查"
-            echo "✅ 测试成功后才更新源码分支"
+            echo "✅ Python patch"
+            echo "✅ StreamConfigSheet typing fix"
+            echo "✅ WebDAV upload"
+            echo "✅ Douyin profile monitoring optimization"
+            echo "✅ Xizhi notification fix"
+            echo "✅ TypeScript check"
+            echo "✅ Application build"
+            echo "✅ git diff check"
             echo ""
             echo "release.yml 未修改"
           } >> "$GITHUB_STEP_SUMMARY"
