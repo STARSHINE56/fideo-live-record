@@ -43,6 +43,10 @@ jobs:
         run: |
           npm ci
 
+      # ============================================================
+      # 1. 增加不受前台状态限制的测试推送函数
+      # ============================================================
+
       - name: Add Xizhi test push function
         run: |
           cat > "$RUNNER_TEMP/patch-utils.cjs" <<'NODE'
@@ -57,12 +61,18 @@ jobs:
               'utf8'
             )
 
+          text =
+            text.replace(
+              /\r\n/g,
+              '\n'
+            )
+
           if (
             !text.includes(
-              'testXizhiPushNotification'
+              'export async function testXizhiPushNotification'
             )
           ) {
-            text += [
+            const block = [
               '',
               '',
               'export async function testXizhiPushNotification(options: {',
@@ -77,7 +87,7 @@ jobs:
               '  }',
               '',
               '  const titleAndContent =',
-              "    options.content",
+              '    options.content',
               "      ? options.title + ' - ' + options.content",
               '      : options.title',
               '',
@@ -86,31 +96,40 @@ jobs:
               "      ? '&'",
               "      : '?'",
               '',
-              '  const response = await fetch(',
-              '    key +',
-              '      separator +',
-              "      'title=' +",
-              '      encodeURIComponent(titleAndContent)',
-              '  )',
+              '  const response =',
+              '    await fetch(',
+              '      key +',
+              '        separator +',
+              "        'title=' +",
+              '        encodeURIComponent(',
+              '          titleAndContent',
+              '        )',
+              '    )',
               '',
               '  return response.ok',
               '}',
               ''
             ].join('\n')
 
-            fs.writeFileSync(
-              path,
-              text,
-              'utf8'
-            )
+            text += block
           }
 
+          fs.writeFileSync(
+            path,
+            text,
+            'utf8'
+          )
+
           console.log(
-            'Xizhi test function added.'
+            'Xizhi test push function added.'
           )
           NODE
 
           node "$RUNNER_TEMP/patch-utils.cjs"
+
+      # ============================================================
+      # 2. 设置页增加测试按钮
+      # ============================================================
 
       - name: Add Xizhi test button
         run: |
@@ -126,36 +145,71 @@ jobs:
               'utf8'
             )
 
+          text =
+            text.replace(
+              /\r\n/g,
+              '\n'
+            )
+
+          # Remove accidental duplicate imports first
+          text =
+            text.replace(
+              /^import \{ useToast \} from '@renderer\/hooks\/useToast'\n/gm,
+              ''
+            )
+
+          text =
+            text.replace(
+              /^import \{ testXizhiPushNotification \} from '@renderer\/lib\/utils'\n/gm,
+              ''
+            )
+
+          const reactImport =
+            "import { useEffect, useState } from 'react'"
+
           if (
             !text.includes(
-              "import { useToast } from '@renderer/hooks/useToast'"
+              reactImport
             )
           ) {
-            text =
-              text.replace(
-                "import { useEffect, useState } from 'react'",
-                [
-                  "import { useEffect, useState } from 'react'",
-                  "import { useToast } from '@renderer/hooks/useToast'",
-                  "import { testXizhiPushNotification } from '@renderer/lib/utils'"
-                ].join('\n')
-              )
+            throw new Error(
+              'React import not found'
+            )
           }
 
+          text =
+            text.replace(
+              reactImport,
+              [
+                reactImport,
+                "import { useToast } from '@renderer/hooks/useToast'",
+                "import { testXizhiPushNotification } from '@renderer/lib/utils'"
+              ].join('\n')
+            )
+
           if (
             !text.includes(
-              'xizhiTesting'
+              'const [\n    xizhiTesting,'
             )
           ) {
-            const marker = [
-              '  const [',
-              '    douyinLoggedIn,',
-              '    setDouyinLoggedIn',
-              '  ] = useState(false)'
-            ].join('\n')
+            const stateRegex =
+              /(\s+const\s+\[\s*\n\s*douyinLoggedIn,\s*\n\s*setDouyinLoggedIn\s*\n\s*\]\s*=\s*useState\(false\))/
 
-            const replacement = [
-              marker,
+            const stateMatch =
+              text.match(
+                stateRegex
+              )
+
+            if (
+              !stateMatch
+            ) {
+              throw new Error(
+                'Douyin login state not found'
+              )
+            }
+
+            const addition = [
+              stateMatch[1],
               '',
               '  const [',
               '    xizhiTesting,',
@@ -167,30 +221,33 @@ jobs:
               '  } = useToast()'
             ].join('\n')
 
-            if (
-              !text.includes(marker)
-            ) {
-              throw new Error(
-                'State marker not found'
-              )
-            }
-
             text =
               text.replace(
-                marker,
-                replacement
+                stateRegex,
+                addition
               )
           }
 
           if (
             !text.includes(
-              'handleTestXizhi'
+              'const handleTestXizhi'
             )
           ) {
-            const marker =
-              '  const handleSelectDir = async () => {'
+            const handlerMarker =
+              /(\n\s*const handleSelectDir\s*=\s*async\s*\(\)\s*=>\s*\{)/
+
+            if (
+              !handlerMarker.test(
+                text
+              )
+            ) {
+              throw new Error(
+                'handleSelectDir not found'
+              )
+            }
 
             const handler = [
+              '',
               '  const handleTestXizhi =',
               '    async () => {',
               '      const key =',
@@ -206,26 +263,32 @@ jobs:
               '            t(',
               "              'default_settings.xizhi_test_failed'",
               '            ),',
+              '',
               '          description:',
               '            t(',
               "              'default_settings.xizhi_key_required'",
               '            ),',
+              '',
               "          variant: 'destructive'",
               '        })',
               '',
               '        return',
               '      }',
               '',
-              '      setXizhiTesting(true)',
+              '      setXizhiTesting(',
+              '        true',
+              '      )',
               '',
               '      try {',
               '        const success =',
               '          await testXizhiPushNotification({',
               '            key,',
+              '',
               '            title:',
               '              t(',
               "                'default_settings.xizhi_test_title'",
               '              ),',
+              '',
               '            content:',
               '              t(',
               "                'default_settings.xizhi_test_content'",
@@ -233,7 +296,9 @@ jobs:
               '          })',
               '',
               '        if (!success) {',
-              "          throw new Error('XIZHI_TEST_FAILED')",
+              '          throw new Error(',
+              "            'XIZHI_TEST_FAILED'",
+              '          )',
               '        }',
               '',
               '        toast({',
@@ -241,6 +306,7 @@ jobs:
               '            t(',
               "              'default_settings.xizhi_test_success'",
               '            ),',
+              '',
               '          description:',
               '            t(',
               "              'default_settings.xizhi_test_success_desc'",
@@ -252,96 +318,98 @@ jobs:
               '            t(',
               "              'default_settings.xizhi_test_failed'",
               '            ),',
+              '',
               '          description:',
               '            t(',
               "              'default_settings.xizhi_test_failed_desc'",
               '            ),',
+              '',
               "          variant: 'destructive'",
               '        })',
               '      } finally {',
-              '        setXizhiTesting(false)',
+              '        setXizhiTesting(',
+              '          false',
+              '        )',
               '      }',
               '    }',
-              '',
               ''
             ].join('\n')
 
-            if (
-              !text.includes(marker)
-            ) {
-              throw new Error(
-                'handleSelectDir marker not found'
-              )
-            }
-
             text =
               text.replace(
-                marker,
-                handler + marker
+                handlerMarker,
+                handler + '$1'
               )
           }
 
-          const oldField = [
-            '                <FormField',
-            '                  control={form.control}',
-            '                  name="xizhiKey"',
-            '                  render={({ field }) => (',
-            '                    <FormItem>',
-            "                      <FormLabel>{t('default_settings.xizhi_key')}</FormLabel>",
-            '                      <FormControl>',
-            '                        <Input',
-            "                          placeholder={t('default_settings.xizhi_key_placeholder')}",
-            '                          {...field}',
-            '                        />',
-            '                      </FormControl>',
-            '                      <FormMessage />',
-            '                    </FormItem>',
-            '                  )}',
-            '                />'
-          ].join('\n')
-
-          const newField = [
-            '                <FormField',
-            '                  control={form.control}',
-            '                  name="xizhiKey"',
-            '                  render={({ field }) => (',
-            '                    <FormItem>',
-            '                      <FormLabel>',
-            "                        {t('default_settings.xizhi_key')}",
-            '                      </FormLabel>',
-            '',
-            '                      <FormControl>',
-            '                        <div className="flex gap-2">',
-            '                          <Input',
-            "                            placeholder={t('default_settings.xizhi_key_placeholder')}",
-            '                            {...field}',
-            '                          />',
-            '',
-            '                          <Button',
-            '                            variant="outline"',
-            '                            type="button"',
-            '                            disabled={xizhiTesting}',
-            '                            onClick={handleTestXizhi}',
-            '                          >',
-            '                            {xizhiTesting',
-            "                              ? t('default_settings.xizhi_testing')",
-            "                              : t('default_settings.xizhi_test')}",
-            '                          </Button>',
-            '                        </div>',
-            '                      </FormControl>',
-            '',
-            '                      <FormMessage />',
-            '                    </FormItem>',
-            '                  )}',
-            '                />'
-          ].join('\n')
-
           if (
-            text.includes(oldField)
+            !text.includes(
+              'onClick={handleTestXizhi}'
+            )
           ) {
+            const fieldRegex =
+              /<FormField\s+control=\{form\.control\}\s+name="xizhiKey"[\s\S]*?<\/FormItem>\s*\)\}\s*\/>/
+
+            const fieldMatch =
+              text.match(
+                fieldRegex
+              )
+
+            if (
+              !fieldMatch
+            ) {
+              throw new Error(
+                'xizhiKey FormField not found'
+              )
+            }
+
+            const newField = [
+              '<FormField',
+              '                  control={form.control}',
+              '                  name="xizhiKey"',
+              '                  render={({ field }) => (',
+              '                    <FormItem>',
+              '                      <FormLabel>',
+              '                        {t(',
+              "                          'default_settings.xizhi_key'",
+              '                        )}',
+              '                      </FormLabel>',
+              '',
+              '                      <FormControl>',
+              '                        <div className="flex gap-2">',
+              '                          <Input',
+              '                            placeholder={t(',
+              "                              'default_settings.xizhi_key_placeholder'",
+              '                            )}',
+              '                            {...field}',
+              '                          />',
+              '',
+              '                          <Button',
+              '                            variant="outline"',
+              '                            type="button"',
+              '                            disabled={xizhiTesting}',
+              '                            onClick={handleTestXizhi}',
+              '                          >',
+              '                            {xizhiTesting',
+              '                              ? t(',
+              "                                  'default_settings.xizhi_testing'",
+              '                                )',
+              '                              : t(',
+              "                                  'default_settings.xizhi_test'",
+              '                                )}',
+              '                          </Button>',
+              '                        </div>',
+              '                      </FormControl>',
+              '',
+              '                      <FormMessage />',
+              '                    </FormItem>',
+              '                  )}',
+              '                />'
+            ].join('\n')
+
             text =
               text.replace(
-                oldField,
+                fieldRegex,
                 newField
               )
           }
@@ -357,7 +425,13 @@ jobs:
           )
           NODE
 
+          sed -i 's/^          # Remove accidental duplicate imports first/          \/\/ Remove accidental duplicate imports first/' "$RUNNER_TEMP/patch-settings.cjs"
+
           node "$RUNNER_TEMP/patch-settings.cjs"
+
+      # ============================================================
+      # 3. 中英文文案
+      # ============================================================
 
       - name: Add Xizhi translations
         run: |
@@ -373,26 +447,47 @@ jobs:
               'utf8'
             )
 
+          text =
+            text.replace(
+              /\r\n/g,
+              '\n'
+            )
+
           if (
             !text.includes(
               "xizhi_test: 'Test Push'"
             )
           ) {
+            const marker =
+              "xizhi_key_placeholder: 'Please enter the Xizhi API Key',"
+
+            if (
+              !text.includes(
+                marker
+              )
+            ) {
+              throw new Error(
+                'English Xizhi locale marker not found'
+              )
+            }
+
+            const replacement = [
+              "xizhi_key_placeholder: 'Please enter the Xizhi push URL',",
+              "        xizhi_test: 'Test Push',",
+              "        xizhi_testing: 'Sending...',",
+              "        xizhi_test_title: 'Fideo Test Push',",
+              "        xizhi_test_content: 'Xizhi push configuration is working',",
+              "        xizhi_test_success: 'Push successful',",
+              "        xizhi_test_success_desc: 'The Xizhi test message has been sent',",
+              "        xizhi_test_failed: 'Push failed',",
+              "        xizhi_test_failed_desc: 'Please check the Xizhi push URL and network',",
+              "        xizhi_key_required: 'Please enter the Xizhi push URL first',"
+            ].join('\n')
+
             text =
               text.replace(
-                "xizhi_key_placeholder: 'Please enter the Xizhi API Key',",
-                [
-                  "xizhi_key_placeholder: 'Please enter the Xizhi push URL',",
-                  "        xizhi_test: 'Test Push',",
-                  "        xizhi_testing: 'Sending...',",
-                  "        xizhi_test_title: 'Fideo Test Push',",
-                  "        xizhi_test_content: 'Xizhi push configuration is working',",
-                  "        xizhi_test_success: 'Push successful',",
-                  "        xizhi_test_success_desc: 'The Xizhi test message has been sent',",
-                  "        xizhi_test_failed: 'Push failed',",
-                  "        xizhi_test_failed_desc: 'Please check the Xizhi push URL and network',",
-                  "        xizhi_key_required: 'Please enter the Xizhi push URL first',"
-                ].join('\n')
+                marker,
+                replacement
               )
           }
 
@@ -401,21 +496,36 @@ jobs:
               "xizhi_test: '测试推送'"
             )
           ) {
+            const marker =
+              "xizhi_key_placeholder: '请输入息知API Key',"
+
+            if (
+              !text.includes(
+                marker
+              )
+            ) {
+              throw new Error(
+                'Chinese Xizhi locale marker not found'
+              )
+            }
+
+            const replacement = [
+              "xizhi_key_placeholder: '请输入息知完整推送地址',",
+              "        xizhi_test: '测试推送',",
+              "        xizhi_testing: '发送中...',",
+              "        xizhi_test_title: 'Fideo 测试推送',",
+              "        xizhi_test_content: '息知推送配置成功',",
+              "        xizhi_test_success: '推送成功',",
+              "        xizhi_test_success_desc: '息知测试消息已发送',",
+              "        xizhi_test_failed: '推送失败',",
+              "        xizhi_test_failed_desc: '请检查息知推送地址和网络连接',",
+              "        xizhi_key_required: '请先填写息知推送地址',"
+            ].join('\n')
+
             text =
               text.replace(
-                "xizhi_key_placeholder: '请输入息知API Key',",
-                [
-                  "xizhi_key_placeholder: '请输入息知完整推送地址',",
-                  "        xizhi_test: '测试推送',",
-                  "        xizhi_testing: '发送中...',",
-                  "        xizhi_test_title: 'Fideo 测试推送',",
-                  "        xizhi_test_content: '息知推送配置成功',",
-                  "        xizhi_test_success: '推送成功',",
-                  "        xizhi_test_success_desc: '息知测试消息已发送',",
-                  "        xizhi_test_failed: '推送失败',",
-                  "        xizhi_test_failed_desc: '请检查息知推送地址和网络连接',",
-                  "        xizhi_key_required: '请先填写息知推送地址',"
-                ].join('\n')
+                marker,
+                replacement
               )
           }
 
@@ -444,6 +554,10 @@ jobs:
 
           node "$RUNNER_TEMP/patch-locales.cjs"
 
+      # ============================================================
+      # 4. 更新测试版本
+      # ============================================================
+
       - name: Update version
         env:
           VERSION: ${{ inputs.version }}
@@ -452,6 +566,10 @@ jobs:
             "$VERSION" \
             --no-git-tag-version \
             --allow-same-version
+
+      # ============================================================
+      # 5. 验证息知测试功能
+      # ============================================================
 
       - name: Verify Xizhi feature
         run: |
@@ -468,6 +586,10 @@ jobs:
             src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
 
           grep -q \
+            "onClick={handleTestXizhi}" \
+            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
+
+          grep -q \
             "测试推送" \
             src/renderer/src/locales/locales.js
 
@@ -476,6 +598,10 @@ jobs:
             src/renderer/src/locales/locales.js
 
           echo "Xizhi test feature verified."
+
+      # ============================================================
+      # 6. 验证 V2.8 核心功能没有损坏
+      # ============================================================
 
       - name: Verify V2.8 core
         run: |
@@ -503,15 +629,27 @@ jobs:
             "audioCodec('copy')" \
             src/main/ffmpeg/record.ts
 
-          echo "V2.8 core retained."
+          echo "V2.8 core verified."
+
+      # ============================================================
+      # 7. TypeScript
+      # ============================================================
 
       - name: TypeScript check
         run: |
           npm run typecheck
 
+      # ============================================================
+      # 8. Electron Build
+      # ============================================================
+
       - name: Build Electron
         run: |
           npm run build
+
+      # ============================================================
+      # 9. Windows x64
+      # ============================================================
 
       - name: Package Windows x64
         run: |
@@ -534,9 +672,13 @@ jobs:
 
           $file = Get-Item $expected
 
-          Write-Host "Installer:"
-          Write-Host $file.Name
-          Write-Host $file.Length
+          Write-Host "Installer verified:"
+          Write-Host "Name: $($file.Name)"
+          Write-Host "Size: $($file.Length)"
+
+      # ============================================================
+      # 10. 提交独立测试分支
+      # ============================================================
 
       - name: Commit V2.9 test
         run: |
@@ -563,6 +705,10 @@ jobs:
             origin \
             douyin-v2.9-xizhi-test
 
+      # ============================================================
+      # 11. 上传测试安装包
+      # ============================================================
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -584,5 +730,5 @@ jobs:
             echo
             echo "- Xizhi test push button added"
             echo "- Test push works while app is visible"
-            echo "- Existing live notification logic retained"
+            echo "- V2.8 monitoring and recording retained"
           } >> "$GITHUB_STEP_SUMMARY"
