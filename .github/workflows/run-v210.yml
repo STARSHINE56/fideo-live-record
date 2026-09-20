@@ -1,0 +1,117 @@
+name: Prepare V2.10
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-v210
+  cancel-in-progress: false
+
+env:
+  SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create safety backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          BACKUP_BRANCH="backup-v210-${GITHUB_RUN_ID}"
+          git branch "$BACKUP_BRANCH"
+          git push origin "$BACKUP_BRANCH"
+
+      - name: Create feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B "$FEATURE_BRANCH" "$SOURCE_BRANCH"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate patch script
+        run: python3 -m py_compile scripts/v210_patch.py
+
+      - name: Apply V2.10 patch
+        run: python3 scripts/v210_patch.py
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Check diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+
+      - name: Commit tested changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add \
+            type.d.ts \
+            src/const.ts \
+            src/main/index.ts \
+            src/main/webdav.ts \
+            src/main/ffmpeg/record.ts \
+            src/main/crawler/plugins/douyin.js \
+            src/preload/index.ts \
+            src/preload/index.d.ts \
+            src/renderer/src/lib/utils.ts \
+            src/renderer/src/store/useDefaultSettingsStore.ts \
+            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx \
+            src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx \
+            src/renderer/src/components/StreamConfigList/StreamConfigList.tsx \
+            src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          if git diff --cached --quiet
+          then
+            echo "No changes to commit."
+          else
+            git commit -m "feat: add WebDAV upload and improve Douyin monitoring"
+          fi
+
+      - name: Push feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force origin "$FEATURE_BRANCH"
+
+      - name: Promote after all checks pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:${SOURCE_BRANCH}"
