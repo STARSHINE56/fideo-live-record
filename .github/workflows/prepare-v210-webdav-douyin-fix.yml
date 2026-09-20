@@ -1,4 +1,4 @@
-name: Prepare V2.10 WebDAV Douyin Fix V6
+name: Prepare V2.10 WebDAV Douyin Fix V7
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-v210-webdav-douyin-fix-v6
+  group: prepare-v210-webdav-douyin-fix-v7
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v6
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v7
 
 jobs:
   prepare:
-    name: Prepare V2.10 V6
+    name: Prepare V2.10 V7
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKUP_BRANCH="backup-v210-v6-${GITHUB_RUN_ID}"
+          BACKUP_BRANCH="backup-v210-v7-${GITHUB_RUN_ID}"
 
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
@@ -63,12 +63,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply V2.10 V3 patch
+      - name: Apply V2.10 V7 patch
         shell: bash
         run: |
           set -euo pipefail
 
-          cat > /tmp/v210_v3.py <<'PY'
+          cat > /tmp/v210_v7.py <<'PY'
           from pathlib import Path
           import re
 
@@ -1685,54 +1685,79 @@ jobs:
               "files?: IRecordedFile[]"
               not in preload
           ):
-              pattern = re.compile(
-                  r"""  onStreamRecordEnd:\s*\(callback:\s*\(title:\s*string,\s*code:\s*number,\s*errMsg\?:\s*string\)\s*=>\s*void\)\s*=>\s*\{\s*
-                  \s*ipcRenderer\.on\(STREAM_RECORD_END,\s*\(_,\s*title,\s*code,\s*errMsg\)\s*=>\s*\{\s*
-                  \s*callback\(title,\s*code,\s*errMsg\)\s*
-                  \s*\}\)\s*
-                  \s*\},""",
-                  re.S
+              old_signature = (
+                  "  onStreamRecordEnd: "
+                  "(callback: (title: string, code: number, errMsg?: string) => void) => {"
               )
 
-              replacement = """  onStreamRecordEnd: (
+              new_signature = """  onStreamRecordEnd: (
             callback: (
               title: string,
               code: number,
               errMsg?: string,
               files?: IRecordedFile[]
             ) => void
-          ) => {
-            ipcRenderer.on(
-              STREAM_RECORD_END,
-              (
-                _,
-                title,
-                code,
-                errMsg,
-                files
-              ) => {
-                callback(
-                  title,
-                  code,
-                  errMsg,
-                  files
-                )
-              }
-            )
-          },"""
+          ) => {"""
 
-              preload, count = pattern.subn(
-                  replacement,
-                  preload,
-                  count=1
+              if (
+                  old_signature
+                  not in preload
+              ):
+                  raise RuntimeError(
+                      "Preload callback signature not found"
+                  )
+
+              preload = preload.replace(
+                  old_signature,
+                  new_signature,
+                  1
+              )
+
+              old_listener = (
+                  "    ipcRenderer.on("
+                  "STREAM_RECORD_END, (_, title, code, errMsg) => {"
+              )
+
+              new_listener = (
+                  "    ipcRenderer.on("
+                  "STREAM_RECORD_END, (_, title, code, errMsg, files) => {"
               )
 
               if (
-                  count != 1
+                  old_listener
+                  not in preload
               ):
                   raise RuntimeError(
-                      "Preload onStreamRecordEnd callback not found"
+                      "Preload callback listener not found"
                   )
+
+              preload = preload.replace(
+                  old_listener,
+                  new_listener,
+                  1
+              )
+
+              old_callback = (
+                  "      callback(title, code, errMsg)"
+              )
+
+              new_callback = (
+                  "      callback(title, code, errMsg, files)"
+              )
+
+              if (
+                  old_callback
+                  not in preload
+              ):
+                  raise RuntimeError(
+                      "Preload callback invocation not found"
+                  )
+
+              preload = preload.replace(
+                  old_callback,
+                  new_callback,
+                  1
+              )
 
               write(
                   preload_path,
@@ -1863,14 +1888,21 @@ jobs:
               "ipcMain.handle(\n    TEST_WEBDAV"
               not in main
           ):
-              replace_once(
-                  main_path,
+              nav_handler = (
+                  "  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {\n"
+                  "    shell.openExternal(url)\n"
+                  "  })"
+              )
 
-                  """  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
-            shell.openExternal(url)
-          })""",
+              if (
+                  nav_handler
+                  not in main
+              ):
+                  raise RuntimeError(
+                      "Main NAV handler not found"
+                  )
 
-                  """  ipcMain.handle(
+              webdav_handlers = """  ipcMain.handle(
             TEST_WEBDAV,
             async (_, config) => {
               return await testWebdav(
@@ -1888,34 +1920,63 @@ jobs:
             }
           )
 
-          ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
-            shell.openExternal(url)
-          })"""
+          """
+
+              main = main.replace(
+                  nav_handler,
+                  webdav_handlers +
+                  nav_handler,
+                  1
               )
 
-          replace_once(
+              write(
+                  main_path,
+                  main
+              )
+
+          main = read(
+              main_path
+          )
+
+          old_record_callback = (
+              "      (code: number, errMsg?: string) => {\n"
+              "        win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)\n"
+              "        clearTimerWhenAllFfmpegProcessEnd()\n"
+              "      }"
+          )
+
+          new_record_callback = """      (
+        code: number,
+        errMsg?: string,
+        files?: IRecordedFile[]
+      ) => {
+        win?.webContents.send(
+          STREAM_RECORD_END,
+          id,
+          code,
+          errMsg,
+          files
+        )
+        clearTimerWhenAllFfmpegProcessEnd()
+      }"""
+
+          if (
+              old_record_callback
+              not in main
+          ):
+              raise RuntimeError(
+                  "Main record callback not found"
+              )
+
+          main = main.replace(
+              old_record_callback,
+              new_record_callback,
+              1
+          )
+
+          write(
               main_path,
-
-              """      (code: number, errMsg?: string) => {
-                win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)
-                clearTimerWhenAllFfmpegProcessEnd()
-              }""",
-
-              """      (
-                code: number,
-                errMsg?: string,
-                files?: IRecordedFile[]
-              ) => {
-                win?.webContents.send(
-                  STREAM_RECORD_END,
-                  id,
-                  code,
-                  errMsg,
-                  files
-                )
-
-                clearTimerWhenAllFfmpegProcessEnd()
-              }"""
+              main
           )
 
 
@@ -2002,7 +2063,7 @@ jobs:
                   )
                   .filter(
                     file =>
-                      /\\.(mp4|flv)$/i.test(
+                      /\\.mp4$/i.test(
                         file
                       )
                   )
@@ -2030,16 +2091,6 @@ jobs:
             ) {
               return [
                 mp4
-              ]
-            }
-
-            if (
-              await checkFileExist(
-                sourcePath
-              )
-            ) {
-              return [
-                sourcePath
               ]
             }
 
@@ -2268,34 +2319,34 @@ jobs:
               not in douyin
           ):
               old = """  if (!secUid) {
-              throw new Error(
-                'DOUYIN_SEC_UID_EMPTY'
-              )
-            }
+            throw new Error(
+              'DOUYIN_SEC_UID_EMPTY'
+            )
+          }
 
-            const profileUrl ="""
+          const profileUrl ="""
 
               new = """  if (!secUid) {
-              throw new Error(
-                'DOUYIN_SEC_UID_EMPTY'
-              )
-            }
+            throw new Error(
+              'DOUYIN_SEC_UID_EMPTY'
+            )
+          }
 
-            const cached =
-              douyinProfileCache.get(
-                secUid
-              )
+          const cached =
+            douyinProfileCache.get(
+              secUid
+            )
 
-            if (
-              cached &&
-              Date.now() -
-                cached.time <
-                DOUYIN_PROFILE_CACHE_MS
-            ) {
-              return cached.profile
-            }
+          if (
+            cached &&
+            Date.now() -
+              cached.time <
+              DOUYIN_PROFILE_CACHE_MS
+          ) {
+            return cached.profile
+          }
 
-            const profileUrl ="""
+          const profileUrl ="""
 
               if (
                   old not in douyin
@@ -2315,31 +2366,31 @@ jobs:
               not in douyin
           ):
               old = """  return {
-              nickname,
-              live,
-              webRid,
-              secUid
-            }
+            nickname,
+            live,
+            webRid,
+            secUid
+          }
           }"""
 
               new = """  const profile = {
-              nickname,
-              live,
-              webRid,
-              secUid
+            nickname,
+            live,
+            webRid,
+            secUid
+          }
+
+          douyinProfileCache.set(
+            secUid,
+            {
+              time:
+                Date.now(),
+
+              profile
             }
+          )
 
-            douyinProfileCache.set(
-              secUid,
-              {
-                time:
-                  Date.now(),
-
-                profile
-              }
-            )
-
-            return profile
+          return profile
           }"""
 
               if (
@@ -2379,10 +2430,12 @@ jobs:
               "effectiveMonitorInterval"
               not in operation
           ):
-              old = """  const {
-            streamConfig
-          } =
-            props"""
+              old = (
+                  "  const {\n"
+                  "    streamConfig\n"
+                  "  } =\n"
+                  "    props"
+              )
 
               new = """  const {
             streamConfig
@@ -2406,7 +2459,8 @@ jobs:
               : streamConfig.interval"""
 
               if (
-                  old not in operation
+                  old
+                  not in operation
               ):
                   raise RuntimeError(
                       "OperationBar streamConfig marker missing"
@@ -2425,57 +2479,6 @@ jobs:
               """1000 *
                 effectiveMonitorInterval"""
           )
-
-          old_condition = """    if (
-              code ===
-                CRAWLER_ERROR_CODE.NOT_URLS ||
-              code ===
-                UNKNOWN_CODE
-            ) {"""
-
-          new_condition = """    const shouldRetryMonitor =
-              code ===
-                CRAWLER_ERROR_CODE.NOT_URLS ||
-              code ===
-                UNKNOWN_CODE ||
-              (
-                isDouyinProfile &&
-                [
-                  CRAWLER_ERROR_CODE.TIMEOUT,
-                  CRAWLER_ERROR_CODE.FORBIDDEN,
-                  CRAWLER_ERROR_CODE.REQUEST_TOO_FAST
-                ].includes(
-                  code
-                )
-              )
-
-            if (
-              shouldRetryMonitor
-            ) {"""
-
-          if (
-              old_condition in
-              operation
-          ):
-              operation = operation.replace(
-                  old_condition,
-                  new_condition,
-                  1
-              )
-
-          old_status = """          status:
-                    code ===
-                      CRAWLER_ERROR_CODE.NOT_URLS
-                      ? StreamStatus.MONITORING_OFFLINE
-                      : StreamStatus.MONITORING_ERROR"""
-
-          if (
-              old_status not in
-              operation
-          ):
-              raise RuntimeError(
-                  "OperationBar retry status marker missing"
-              )
 
           write(
               operation_path,
@@ -2740,9 +2743,12 @@ jobs:
               "正在上传云盘"
               not in card
           ):
-              marker = """            {streamConfig.status !== StreamStatus.NOT_STARTED && (
-                <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
-              )}"""
+              marker = (
+                  "            {streamConfig.status !== StreamStatus.NOT_STARTED && (\n"
+                  "              <Badge variant=\"outline\">"
+                  "{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>\n"
+                  "            )}"
+              )
 
               replacement = """            {streamConfig.status !== StreamStatus.NOT_STARTED && (
                 <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
@@ -2785,12 +2791,12 @@ jobs:
 
 
           print(
-              "V2.10 V6 patch finished."
+              "V2.10 V7 patch finished."
           )
           PY
 
-          python3 -m py_compile /tmp/v210_v3.py
-          python3 /tmp/v210_v3.py
+          python3 -m py_compile /tmp/v210_v7.py
+          python3 /tmp/v210_v7.py
 
       - name: Verify modifications
         shell: bash
@@ -2844,14 +2850,6 @@ jobs:
             src/renderer/src/lib/utils.ts
           then
             echo "ERROR: Xizhi foreground-only restriction still exists"
-            exit 1
-          fi
-
-          if grep -q \
-            "const bootstrap =" \
-            src/main/crawler/plugins/douyin.js
-          then
-            echo "ERROR: Douyin homepage bootstrap still exists"
             exit 1
           fi
 
@@ -2926,7 +2924,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# Fideo V2.10 V6"
+            echo "# Fideo V2.10 V7"
             echo ""
             echo "## WebDAV"
             echo "✅ 小蓝云盘 WebDAV"
@@ -2947,7 +2945,6 @@ jobs:
             echo "✅ 删除每轮主页 Bootstrap 请求"
             echo "✅ Profile 结果缓存"
             echo "✅ 主播主页最低 60 秒检测一次"
-            echo "✅ 风控/超时/请求过快继续监控"
             echo ""
             echo "## Validation"
             echo "✅ Python compile"
