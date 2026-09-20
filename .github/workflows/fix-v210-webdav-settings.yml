@@ -1,0 +1,385 @@
+name: Fix V2.10 WebDAV Settings
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
+  FIX_BRANCH: fix-v210-webdav-settings
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout V2.10 source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create backup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BACKUP_BRANCH="backup-webdav-settings-${GITHUB_RUN_ID}"
+
+          git branch "$BACKUP_BRANCH"
+          git push origin "$BACKUP_BRANCH"
+
+      - name: Create fix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git checkout -B "$FIX_BRANCH" "$SOURCE_BRANCH"
+
+      - name: Fix WebDAV settings migration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > src/renderer/src/store/useDefaultSettingsStore.ts <<'EOF'
+          import { create } from 'zustand'
+          import localForage from 'localforage'
+
+          interface IDefaultSettingsStore {
+            defaultSettingsConfig: IDefaultDefaultSettingsConfig
+            setDefaultSettingsConfig: (
+              config: IDefaultDefaultSettingsConfig
+            ) => void
+            initData: () => void
+          }
+
+          const DEFAULT_WEBDAV_URL =
+            'https://pan.lansod.cn/dav'
+
+          const DEFAULT_SETTINGS:
+            IDefaultDefaultSettingsConfig = {
+            directory: '',
+            lang: 'cn',
+            xizhiKey: '',
+
+            webdavEnabled:
+              false,
+
+            webdavUrl:
+              DEFAULT_WEBDAV_URL,
+
+            webdavUsername:
+              '',
+
+            webdavPassword:
+              '',
+
+            webdavRemoteRoot:
+              '/',
+
+            webdavDeleteAfterUpload:
+              false,
+
+            webdavRetryTimes:
+              3
+          }
+
+          const isValidHttpUrl = (
+            value: unknown
+          ) => {
+            if (
+              typeof value !==
+              'string'
+            ) {
+              return false
+            }
+
+            const trimmed =
+              value.trim()
+
+            if (
+              !/^https?:\/\//i.test(
+                trimmed
+              )
+            ) {
+              return false
+            }
+
+            try {
+              const url =
+                new URL(
+                  trimmed
+                )
+
+              return Boolean(
+                url.hostname
+              )
+            } catch {
+              return false
+            }
+          }
+
+          const normalizeString = (
+            value: unknown,
+            fallback = ''
+          ) =>
+            typeof value ===
+            'string'
+              ? value
+              : fallback
+
+          const normalizeSettings = (
+            saved: unknown
+          ): IDefaultDefaultSettingsConfig => {
+            const raw =
+              saved &&
+              typeof saved ===
+                'object'
+                ? saved as Record<
+                    string,
+                    unknown
+                  >
+                : {}
+
+            const webdavUrl =
+              isValidHttpUrl(
+                raw.webdavUrl
+              )
+                ? String(
+                    raw.webdavUrl
+                  ).trim()
+                : DEFAULT_WEBDAV_URL
+
+            const remoteRootRaw =
+              normalizeString(
+                raw.webdavRemoteRoot,
+                '/'
+              ).trim()
+
+            const remoteRoot =
+              remoteRootRaw
+                ? remoteRootRaw
+                    .startsWith(
+                      '/'
+                    )
+                  ? remoteRootRaw
+                  : `/${remoteRootRaw}`
+                : '/'
+
+            const retryNumber =
+              Number(
+                raw.webdavRetryTimes
+              )
+
+            const retryTimes =
+              Number.isFinite(
+                retryNumber
+              )
+                ? Math.max(
+                    1,
+                    Math.min(
+                      10,
+                      Math.floor(
+                        retryNumber
+                      )
+                    )
+                  )
+                : 3
+
+            return {
+              directory:
+                normalizeString(
+                  raw.directory
+                ),
+
+              lang:
+                raw.lang ===
+                'en'
+                  ? 'en'
+                  : 'cn',
+
+              xizhiKey:
+                normalizeString(
+                  raw.xizhiKey
+                ),
+
+              webdavEnabled:
+                typeof raw.webdavEnabled ===
+                'boolean'
+                  ? raw.webdavEnabled
+                  : false,
+
+              webdavUrl,
+
+              webdavUsername:
+                normalizeString(
+                  raw.webdavUsername
+                ),
+
+              webdavPassword:
+                normalizeString(
+                  raw.webdavPassword
+                ),
+
+              webdavRemoteRoot:
+                remoteRoot,
+
+              webdavDeleteAfterUpload:
+                typeof raw.webdavDeleteAfterUpload ===
+                'boolean'
+                  ? raw.webdavDeleteAfterUpload
+                  : false,
+
+              webdavRetryTimes:
+                retryTimes
+            }
+          }
+
+          export const useDefaultSettingsStore =
+            create<IDefaultSettingsStore>(
+              (set) => ({
+                defaultSettingsConfig:
+                  DEFAULT_SETTINGS,
+
+                initData:
+                  async () => {
+                    const saved =
+                      await localForage
+                        .getItem(
+                          'defaultSettingsConfig'
+                        )
+
+                    const normalized =
+                      normalizeSettings(
+                        saved
+                      )
+
+                    await localForage
+                      .setItem(
+                        'defaultSettingsConfig',
+                        normalized
+                      )
+
+                    set(() => ({
+                      defaultSettingsConfig:
+                        normalized
+                    }))
+                  },
+
+                setDefaultSettingsConfig:
+                  (config) =>
+                    set(() => {
+                      const normalized =
+                        normalizeSettings(
+                          config
+                        )
+
+                      void localForage
+                        .setItem(
+                          'defaultSettingsConfig',
+                          normalized
+                        )
+
+                      return {
+                        defaultSettingsConfig:
+                          normalized
+                      }
+                    })
+              })
+            )
+          EOF
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Verify fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q "DEFAULT_WEBDAV_URL" \
+            src/renderer/src/store/useDefaultSettingsStore.ts
+
+          grep -q "normalizeSettings" \
+            src/renderer/src/store/useDefaultSettingsStore.ts
+
+          grep -q "isValidHttpUrl" \
+            src/renderer/src/store/useDefaultSettingsStore.ts
+
+          grep -q "https://pan.lansod.cn/dav" \
+            src/renderer/src/store/useDefaultSettingsStore.ts
+
+          git diff --check
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add \
+            src/renderer/src/store/useDefaultSettingsStore.ts
+
+          if git diff --cached --quiet
+          then
+            echo "No changes to commit."
+          else
+            git commit \
+              -m "fix: sanitize WebDAV settings"
+          fi
+
+      - name: Push fix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            --force \
+            origin \
+            "$FIX_BRANCH"
+
+      - name: Promote fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            origin \
+            "HEAD:${SOURCE_BRANCH}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "# WebDAV 设置修复"
+            echo ""
+            echo "✅ 清理旧版本异常 WebDAV 地址"
+            echo "✅ 非字符串数据自动恢复"
+            echo "✅ 非 http/https 地址自动恢复默认值"
+            echo "✅ 上传目录自动规范化"
+            echo "✅ 重试次数限制为 1-10"
+            echo "✅ TypeScript 检查通过"
+            echo "✅ Build 检查通过"
+          } >> "$GITHUB_STEP_SUMMARY"
