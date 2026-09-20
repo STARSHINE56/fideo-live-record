@@ -1,0 +1,801 @@
+name: Prepare V2.9.1 Monitor Status
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare Detailed Monitor Status
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout current release source
+        uses: actions/checkout@v4
+        with:
+          ref: douyin-v2.8-anchor-monitor-test
+          fetch-depth: 0
+
+      - name: Create safety backup
+        shell: bash
+        run: |
+          git push \
+            origin \
+            HEAD:refs/heads/backup-before-monitor-status \
+            --force
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          npm ci
+
+      # ============================================================
+      # 修改监控状态
+      # ============================================================
+
+      - name: Patch detailed monitor status
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $script = @'
+          const fs = require('fs')
+
+          const utilsPath =
+            'src/renderer/src/lib/utils.ts'
+
+          const operationPath =
+            'src/renderer/src/components/StreamConfigList/components/OperationBar.tsx'
+
+          const cardPath =
+            'src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx'
+
+          const listPath =
+            'src/renderer/src/components/StreamConfigList/StreamConfigList.tsx'
+
+          const localePath =
+            'src/renderer/src/locales/locales.js'
+
+          function read(path) {
+            return fs
+              .readFileSync(
+                path,
+                'utf8'
+              )
+              .replace(
+                /\r\n/g,
+                '\n'
+              )
+          }
+
+          function write(path, text) {
+            fs.writeFileSync(
+              path,
+              text,
+              'utf8'
+            )
+          }
+
+          // ========================================================
+          // 1. StreamStatus
+          // ========================================================
+
+          let utils =
+            read(
+              utilsPath
+            )
+
+          if (
+            !utils.includes(
+              'MONITORING_OFFLINE'
+            )
+          ) {
+            const oldEnum =
+          `export enum StreamStatus {
+            NOT_STARTED = 0,
+            PREPARING_TO_RECORD = 1,
+            MONITORING = 2,
+            RECORDING = 3,
+            VIDEO_FORMAT_CONVERSION = 4
+          }`
+
+            const newEnum =
+          `export enum StreamStatus {
+            NOT_STARTED = 0,
+            PREPARING_TO_RECORD = 1,
+            MONITORING = 2,
+            RECORDING = 3,
+            VIDEO_FORMAT_CONVERSION = 4,
+
+            MONITORING_OFFLINE = 5,
+            MONITORING_LIVE = 6,
+            MONITORING_ERROR = 7
+          }`
+
+            if (
+              !utils.includes(
+                oldEnum
+              )
+            ) {
+              throw new Error(
+                'StreamStatus enum marker not found'
+              )
+            }
+
+            utils =
+              utils.replace(
+                oldEnum,
+                newEnum
+              )
+          }
+
+          write(
+            utilsPath,
+            utils
+          )
+
+          // ========================================================
+          // 2. OperationBar
+          // ========================================================
+
+          let operation =
+            read(
+              operationPath
+            )
+
+          // --------------------------------------------------------
+          // 开始纯监控：
+          // 先显示“监控中”，第一次检测后再细分
+          // --------------------------------------------------------
+
+          // --------------------------------------------------------
+          // 检测成功且有直播流 -> 已开播
+          // --------------------------------------------------------
+
+          if (
+            !operation.includes(
+              'status:\n              StreamStatus.MONITORING_LIVE'
+            )
+          ) {
+            const liveMarker =
+          `      if (
+                result.code ===
+                  SUCCESS_CODE &&
+                Array.isArray(
+                  result.liveUrls
+                ) &&
+                result.liveUrls.length >
+                  0
+              ) {`
+
+            if (
+              !operation.includes(
+                liveMarker
+              )
+            ) {
+              throw new Error(
+                'Live result marker not found'
+              )
+            }
+
+            const liveReplacement =
+          `      if (
+                result.code ===
+                  SUCCESS_CODE &&
+                Array.isArray(
+                  result.liveUrls
+                ) &&
+                result.liveUrls.length >
+                  0
+              ) {
+                await updateStreamConfig(
+                  {
+                    ...latest,
+
+                    status:
+                      StreamStatus.MONITORING_LIVE
+                  },
+
+                  streamConfig.id
+                )`
+
+            operation =
+              operation.replace(
+                liveMarker,
+                liveReplacement
+              )
+          }
+
+          // --------------------------------------------------------
+          // NOT_URLS -> 未开播
+          // --------------------------------------------------------
+
+          if (
+            !operation.includes(
+              'StreamStatus.MONITORING_OFFLINE'
+            )
+          ) {
+            const offlineMarker =
+          `      if (
+                result.code ===
+                  CRAWLER_ERROR_CODE.NOT_URLS
+              ) {
+                liveNotifiedRef.current =
+                  false`
+
+            if (
+              !operation.includes(
+                offlineMarker
+              )
+            ) {
+              throw new Error(
+                'Offline marker not found'
+              )
+            }
+
+            const offlineReplacement =
+          `      if (
+                result.code ===
+                  CRAWLER_ERROR_CODE.NOT_URLS
+              ) {
+                liveNotifiedRef.current =
+                  false
+
+                await updateStreamConfig(
+                  {
+                    ...latest,
+
+                    status:
+                      StreamStatus.MONITORING_OFFLINE
+                  },
+
+                  streamConfig.id
+                )`
+
+            operation =
+              operation.replace(
+                offlineMarker,
+                offlineReplacement
+              )
+          }
+
+          // --------------------------------------------------------
+          // UNKNOWN_CODE -> 检测异常
+          // --------------------------------------------------------
+
+          if (
+            !operation.includes(
+              'StreamStatus.MONITORING_ERROR'
+            )
+          ) {
+            const errorMarker =
+          `      if (
+                result.code ===
+                UNKNOWN_CODE
+              ) {
+                scheduleMonitorOnly()`
+
+            if (
+              !operation.includes(
+                errorMarker
+              )
+            ) {
+              throw new Error(
+                'Unknown result marker not found'
+              )
+            }
+
+            const errorReplacement =
+          `      if (
+                result.code ===
+                UNKNOWN_CODE
+              ) {
+                await updateStreamConfig(
+                  {
+                    ...latest,
+
+                    status:
+                      StreamStatus.MONITORING_ERROR
+                  },
+
+                  streamConfig.id
+                )
+
+                scheduleMonitorOnly()`
+
+            operation =
+              operation.replace(
+                errorMarker,
+                errorReplacement
+              )
+          }
+
+          // --------------------------------------------------------
+          // 其他解析错误，也标记检测异常
+          // --------------------------------------------------------
+
+          if (
+            !operation.includes(
+              'monitoringOtherErrorStatus'
+            )
+          ) {
+            const marker =
+          `      if (isFirst) {
+                const errMessage =`
+
+            if (
+              !operation.includes(
+                marker
+              )
+            ) {
+              throw new Error(
+                'Other error marker not found'
+              )
+            }
+
+            const replacement =
+          `      const monitoringOtherErrorStatus =
+                StreamStatus.MONITORING_ERROR
+
+              await updateStreamConfig(
+                {
+                  ...latest,
+
+                  status:
+                    monitoringOtherErrorStatus
+                },
+
+                streamConfig.id
+              )
+
+              if (isFirst) {
+                const errMessage =`
+
+            operation =
+              operation.replace(
+                marker,
+                replacement
+              )
+          }
+
+          // --------------------------------------------------------
+          // 用户暂停时，3种监控状态都算正在运行
+          // 原逻辑按 autoRecord=false 已经可停止，不需要改
+          // --------------------------------------------------------
+
+          write(
+            operationPath,
+            operation
+          )
+
+          // ========================================================
+          // 3. 卡片状态文案
+          // ========================================================
+
+          let card =
+            read(
+              cardPath
+            )
+
+          const oldMap =
+          `const streamStatusToLocaleMap = {
+            0: 'stream_config.not_started',
+            1: 'stream_config.preparing_to_record',
+            2: 'stream_config.monitoring',
+            3: 'stream_config.recording',
+            4: 'stream_config.video_format_conversion'
+          }`
+
+          const newMap =
+          `const streamStatusToLocaleMap = {
+            0: 'stream_config.not_started',
+            1: 'stream_config.preparing_to_record',
+            2: 'stream_config.monitoring',
+            3: 'stream_config.recording',
+            4: 'stream_config.video_format_conversion',
+            5: 'stream_config.monitoring_offline',
+            6: 'stream_config.monitoring_live',
+            7: 'stream_config.monitoring_error'
+          }`
+
+          if (
+            !card.includes(
+              'stream_config.monitoring_offline'
+            )
+          ) {
+            if (
+              !card.includes(
+                oldMap
+              )
+            ) {
+              throw new Error(
+                'Status locale map not found'
+              )
+            }
+
+            card =
+              card.replace(
+                oldMap,
+                newMap
+              )
+          }
+
+          write(
+            cardPath,
+            card
+          )
+
+          // ========================================================
+          // 4. 顶部“监控中”筛选兼容新状态
+          // ========================================================
+
+          let list =
+            read(
+              listPath
+            )
+
+          const oldFilter =
+          `.filter((streamConfig) => streamConfig.status === Number(navSelectedStatus))`
+
+          const newFilter =
+          `.filter((streamConfig) => {
+                const selectedStatus =
+                  Number(navSelectedStatus)
+
+                if (
+                  selectedStatus ===
+                  StreamStatus.MONITORING
+                ) {
+                  return [
+                    StreamStatus.MONITORING,
+                    StreamStatus.MONITORING_OFFLINE,
+                    StreamStatus.MONITORING_LIVE,
+                    StreamStatus.MONITORING_ERROR
+                  ].includes(
+                    streamConfig.status
+                  )
+                }
+
+                return (
+                  streamConfig.status ===
+                  selectedStatus
+                )
+              })`
+
+          if (
+            !list.includes(
+              'StreamStatus.MONITORING_OFFLINE'
+            )
+          ) {
+            if (
+              !list.includes(
+                oldFilter
+              )
+            ) {
+              throw new Error(
+                'Monitoring filter marker not found'
+              )
+            }
+
+            list =
+              list.replace(
+                oldFilter,
+                newFilter
+              )
+          }
+
+          // ========================================================
+          // 5. 用户停止状态兼容
+          // ========================================================
+
+          const oldStop =
+          `(streamConfig.status === StreamStatus.PREPARING_TO_RECORD ||
+                    streamConfig.status === StreamStatus.MONITORING)`
+
+          const newStop =
+          `(streamConfig.status === StreamStatus.PREPARING_TO_RECORD ||
+                    streamConfig.status === StreamStatus.MONITORING ||
+                    streamConfig.status === StreamStatus.MONITORING_OFFLINE ||
+                    streamConfig.status === StreamStatus.MONITORING_LIVE ||
+                    streamConfig.status === StreamStatus.MONITORING_ERROR)`
+
+          if (
+            list.includes(
+              oldStop
+            )
+          ) {
+            list =
+              list.replace(
+                oldStop,
+                newStop
+              )
+          }
+
+          write(
+            listPath,
+            list
+          )
+
+          // ========================================================
+          // 6. 中英文文案
+          // ========================================================
+
+          let locales =
+            read(
+              localePath
+            )
+
+          // English
+          if (
+            !locales.includes(
+              "monitoring_offline: 'Monitoring · Offline'"
+            )
+          ) {
+            const marker =
+              "monitoring: 'Monitoring',"
+
+            const replacement = [
+              "monitoring: 'Monitoring',",
+              "        monitoring_offline: 'Monitoring · Offline',",
+              "        monitoring_live: 'Monitoring · Live',",
+              "        monitoring_error: 'Monitoring · Check Failed',"
+            ].join('\n')
+
+            locales =
+              locales.replace(
+                marker,
+                replacement
+              )
+          }
+
+          // Chinese
+          if (
+            !locales.includes(
+              "monitoring_offline: '监控中 · 未开播'"
+            )
+          ) {
+            const marker =
+              "monitoring: '监控中',"
+
+            const replacement = [
+              "monitoring: '监控中',",
+              "        monitoring_offline: '监控中 · 未开播',",
+              "        monitoring_live: '监控中 · 已开播',",
+              "        monitoring_error: '监控中 · 检测异常',"
+            ].join('\n')
+
+            locales =
+              locales.replace(
+                marker,
+                replacement
+              )
+          }
+
+          write(
+            localePath,
+            locales
+          )
+
+          console.log(
+            'Detailed monitor status patch complete.'
+          )
+          '@
+
+          $patchPath =
+            Join-Path `
+              $env:RUNNER_TEMP `
+              "patch-monitor-status.cjs"
+
+          Set-Content `
+            -Path $patchPath `
+            -Value $script `
+            -Encoding utf8
+
+          node $patchPath
+
+      # ============================================================
+      # 验证新状态
+      # ============================================================
+
+      - name: Verify detailed monitor status
+        shell: bash
+        run: |
+          grep -q \
+            "MONITORING_OFFLINE = 5" \
+            src/renderer/src/lib/utils.ts
+
+          grep -q \
+            "MONITORING_LIVE = 6" \
+            src/renderer/src/lib/utils.ts
+
+          grep -q \
+            "MONITORING_ERROR = 7" \
+            src/renderer/src/lib/utils.ts
+
+          grep -q \
+            "StreamStatus.MONITORING_OFFLINE" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "StreamStatus.MONITORING_LIVE" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "StreamStatus.MONITORING_ERROR" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "监控中 · 未开播" \
+            src/renderer/src/locales/locales.js
+
+          grep -q \
+            "监控中 · 已开播" \
+            src/renderer/src/locales/locales.js
+
+          grep -q \
+            "监控中 · 检测异常" \
+            src/renderer/src/locales/locales.js
+
+          echo "Detailed monitoring status verified."
+
+      # ============================================================
+      # 检查之前的息知功能还在
+      # ============================================================
+
+      - name: Verify Xizhi feature retained
+        shell: bash
+        run: |
+          grep -q \
+            "testXizhiPushNotification" \
+            src/renderer/src/lib/utils.ts
+
+          grep -q \
+            "handleTestXizhi" \
+            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
+
+          grep -q \
+            "onClick={handleTestXizhi}" \
+            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
+
+          echo "Xizhi feature retained."
+
+      # ============================================================
+      # 检查 V2.8 主播监控核心
+      # ============================================================
+
+      - name: Verify Douyin monitoring core
+        shell: bash
+        run: |
+          grep -q \
+            "getDouyinAnchorProfile" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "resolveDouyinAnchorLiveRoom" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "handleMonitorOnly" \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "autoRecord: boolean" \
+            type.d.ts
+
+          grep -q \
+            "videoCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "audioCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          echo "Douyin monitoring core retained."
+
+      # ============================================================
+      # TypeScript + Build
+      # ============================================================
+
+      - name: TypeScript check
+        shell: bash
+        run: |
+          npm run typecheck
+
+      - name: Build Electron
+        shell: bash
+        run: |
+          npm run build
+
+      # ============================================================
+      # 保存独立 V2.9.1 分支
+      # ============================================================
+
+      - name: Commit V2.9.1 source
+        shell: bash
+        run: |
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch \
+            -C \
+            douyin-v2.9.1-monitor-status
+
+          git add \
+            src/renderer/src/lib/utils.ts \
+            src/renderer/src/components/StreamConfigList/components/OperationBar.tsx \
+            src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx \
+            src/renderer/src/components/StreamConfigList/StreamConfigList.tsx \
+            src/renderer/src/locales/locales.js
+
+          if git diff --cached --quiet
+          then
+            echo "No source changes."
+          else
+            git commit \
+              -m "Add detailed monitoring status"
+          fi
+
+          git push \
+            --force \
+            origin \
+            douyin-v2.9.1-monitor-status
+
+      # ============================================================
+      # 全部通过后推进正式发布源码分支
+      # ============================================================
+
+      - name: Promote to release source branch
+        shell: bash
+        run: |
+          CURRENT_SHA="$(
+            git rev-parse HEAD
+          )"
+
+          echo \
+            "Promoting commit: $CURRENT_SHA"
+
+          git push \
+            --force \
+            origin \
+            "$CURRENT_SHA:refs/heads/douyin-v2.8-anchor-monitor-test"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "# Fideo V2.9.1 监控状态细分"
+            echo
+            echo "新增状态："
+            echo
+            echo "- 监控中 · 未开播"
+            echo "- 监控中 · 已开播"
+            echo "- 监控中 · 检测异常"
+            echo
+            echo "保留："
+            echo
+            echo "- 息知测试推送"
+            echo "- 抖音主播主页监控"
+            echo "- 自动录制"
+            echo "- 仅监控模式"
+            echo "- FFmpeg 录制"
+            echo
+            echo "备份分支：backup-before-monitor-status"
+            echo "新功能分支：douyin-v2.9.1-monitor-status"
+            echo "正式源码分支：douyin-v2.8-anchor-monitor-test"
+            echo
+            echo "release.yml 未修改"
+          } >> "$GITHUB_STEP_SUMMARY"
