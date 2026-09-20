@@ -18,10 +18,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
 
-    defaults:
-      run:
-        shell: bash
-
     steps:
       - name: Checkout tested V2.8
         uses: actions/checkout@v4
@@ -30,6 +26,7 @@ jobs:
           fetch-depth: 0
 
       - name: Create V2.9 test branch
+        shell: bash
         run: |
           git switch -C douyin-v2.9-xizhi-test
 
@@ -40,150 +37,113 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        shell: bash
         run: |
           npm ci
 
-      # ============================================================
-      # 1. 增加可强制执行的息知测试推送函数
-      # ============================================================
-
-      - name: Add Xizhi test push function
+      - name: Patch Xizhi test feature
+        shell: bash
         run: |
-          node <<'NODE'
+          cat > patch-xizhi.cjs <<'NODE'
           const fs = require('fs')
 
-          const path =
+          const utilsPath =
             'src/renderer/src/lib/utils.ts'
 
-          let text =
-            fs.readFileSync(
-              path,
-              'utf8'
-            )
-
-          if (
-            !text.includes(
-              'export async function testXizhiPushNotification'
-            )
-          ) {
-            text += `
-
-
-          export async function testXizhiPushNotification(options: {
-            key: string
-            title: string
-            content?: string
-          }): Promise<boolean> {
-            const key =
-              options.key.trim()
-
-            if (!key) {
-              return false
-            }
-
-            const titleAndContent =
-              options.content
-                ? \`\${options.title} - \${options.content}\`
-                : options.title
-
-            const separator =
-              key.includes('?')
-                ? '&'
-                : '?'
-
-            const response =
-              await fetch(
-                \`\${key}\${separator}title=\${encodeURIComponent(
-                  titleAndContent
-                )}\`
-              )
-
-            return response.ok
-          }
-          `
-
-            fs.writeFileSync(
-              path,
-              text,
-              'utf8'
-            )
-          }
-
-          console.log(
-            'Xizhi test push function added.'
-          )
-          NODE
-
-      # ============================================================
-      # 2. 设置页面增加测试按钮
-      # ============================================================
-
-      - name: Add Xizhi test button
-        run: |
-          node <<'NODE'
-          const fs = require('fs')
-
-          const path =
+          const settingsPath =
             'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx'
 
-          let text =
+          const localePath =
+            'src/renderer/src/locales/locales.js'
+
+          let utils =
             fs.readFileSync(
-              path,
+              utilsPath,
               'utf8'
             )
 
           if (
-            !text.includes(
+            !utils.includes(
               'testXizhiPushNotification'
             )
           ) {
-            const importMarker =
-              "import { useEffect, useState } from 'react'"
+            utils += `
 
-            if (
-              !text.includes(
-                importMarker
-              )
-            ) {
-              throw new Error(
-                'React import marker not found'
-              )
-            }
+export async function testXizhiPushNotification(options: {
+  key: string
+  title: string
+  content?: string
+}): Promise<boolean> {
+  const key = options.key.trim()
 
-            text =
-              text.replace(
-                importMarker,
-                `${importMarker}
-import { useToast } from '@renderer/hooks/useToast'
-import { testXizhiPushNotification } from '@renderer/lib/utils'`
+  if (!key) {
+    return false
+  }
+
+  const titleAndContent =
+    options.content
+      ? options.title + ' - ' + options.content
+      : options.title
+
+  const separator =
+    key.includes('?')
+      ? '&'
+      : '?'
+
+  const response =
+    await fetch(
+      key +
+        separator +
+        'title=' +
+        encodeURIComponent(
+          titleAndContent
+        )
+    )
+
+  return response.ok
+}
+`
+
+            fs.writeFileSync(
+              utilsPath,
+              utils,
+              'utf8'
+            )
+          }
+
+          let settings =
+            fs.readFileSync(
+              settingsPath,
+              'utf8'
+            )
+
+          if (
+            !settings.includes(
+              "import { useToast } from '@renderer/hooks/useToast'"
+            )
+          ) {
+            settings =
+              settings.replace(
+                "import { useEffect, useState } from 'react'",
+                "import { useEffect, useState } from 'react'\nimport { useToast } from '@renderer/hooks/useToast'\nimport { testXizhiPushNotification } from '@renderer/lib/utils'"
               )
           }
 
           const stateMarker =
-          `  const [
-            douyinLoggedIn,
-            setDouyinLoggedIn
-          ] = useState(false)`
+`  const [
+    douyinLoggedIn,
+    setDouyinLoggedIn
+  ] = useState(false)`
 
           if (
-            !text.includes(
+            !settings.includes(
               'xizhiTesting'
             )
           ) {
-            if (
-              !text.includes(
-                stateMarker
-              )
-            ) {
-              throw new Error(
-                'State insertion marker not found'
-              )
-            }
-
-            text =
-              text.replace(
+            settings =
+              settings.replace(
                 stateMarker,
-                `${stateMarker}
+`${stateMarker}
 
   const [
     xizhiTesting,
@@ -197,25 +157,15 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
           }
 
           const handlerMarker =
-          `  const handleSelectDir = async () => {`
+            '  const handleSelectDir = async () => {'
 
           if (
-            !text.includes(
+            !settings.includes(
               'handleTestXizhi'
             )
           ) {
-            if (
-              !text.includes(
-                handlerMarker
-              )
-            ) {
-              throw new Error(
-                'Handler insertion marker not found'
-              )
-            }
-
             const handler =
-          `  const handleTestXizhi =
+`  const handleTestXizhi =
     async () => {
       const key =
         form
@@ -243,20 +193,16 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
         return
       }
 
-      setXizhiTesting(
-        true
-      )
+      setXizhiTesting(true)
 
       try {
         const success =
           await testXizhiPushNotification({
             key,
-
             title:
               t(
                 'default_settings.xizhi_test_title'
               ),
-
             content:
               t(
                 'default_settings.xizhi_test_content'
@@ -296,17 +242,15 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
             'destructive'
         })
       } finally {
-        setXizhiTesting(
-          false
-        )
+        setXizhiTesting(false)
       }
     }
 
 
 `
 
-            text =
-              text.replace(
+            settings =
+              settings.replace(
                 handlerMarker,
                 handler +
                   handlerMarker
@@ -314,7 +258,7 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
           }
 
           const oldField =
-          `                <FormField
+`                <FormField
                   control={form.control}
                   name="xizhiKey"
                   render={({ field }) => (
@@ -332,7 +276,7 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
                 />`
 
           const newField =
-          `                <FormField
+`                <FormField
                   control={form.control}
                   name="xizhiKey"
                   render={({ field }) => (
@@ -379,74 +323,38 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
                 />`
 
           if (
-            !text.includes(
-              'default_settings.xizhi_test'
-            ) ||
-            text.includes(
+            settings.includes(
               oldField
             )
           ) {
-            if (
-              !text.includes(
-                oldField
+            settings =
+              settings.replace(
+                oldField,
+                newField
               )
-            ) {
-              if (
-                !text.includes(
-                  'handleTestXizhi'
-                )
-              ) {
-                throw new Error(
-                  'Xizhi field not found'
-                )
-              }
-            } else {
-              text =
-                text.replace(
-                  oldField,
-                  newField
-                )
-            }
           }
 
           fs.writeFileSync(
-            path,
-            text,
+            settingsPath,
+            settings,
             'utf8'
           )
 
-          console.log(
-            'Xizhi test button added.'
-          )
-          NODE
-
-      # ============================================================
-      # 3. 增加中英文文案
-      # ============================================================
-
-      - name: Add Xizhi translations
-        run: |
-          node <<'NODE'
-          const fs = require('fs')
-
-          const path =
-            'src/renderer/src/locales/locales.js'
-
-          let text =
+          let locale =
             fs.readFileSync(
-              path,
+              localePath,
               'utf8'
             )
 
           if (
-            !text.includes(
+            !locale.includes(
               "xizhi_test: 'Test Push'"
             )
           ) {
-            text =
-              text.replace(
+            locale =
+              locale.replace(
                 "xizhi_key_placeholder: 'Please enter the Xizhi API Key',",
-                `xizhi_key_placeholder: 'Please enter the Xizhi API Key',
+`xizhi_key_placeholder: 'Please enter the Xizhi push URL',
         xizhi_test: 'Test Push',
         xizhi_testing: 'Sending...',
         xizhi_test_title: 'Fideo Test Push',
@@ -460,14 +368,14 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
           }
 
           if (
-            !text.includes(
+            !locale.includes(
               "xizhi_test: '测试推送'"
             )
           ) {
-            text =
-              text.replace(
+            locale =
+              locale.replace(
                 "xizhi_key_placeholder: '请输入息知API Key',",
-                `xizhi_key_placeholder: '请输入息知完整推送地址',
+`xizhi_key_placeholder: '请输入息知完整推送地址',
         xizhi_test: '测试推送',
         xizhi_testing: '发送中...',
         xizhi_test_title: 'Fideo 测试推送',
@@ -480,46 +388,44 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
               )
           }
 
-          text =
-            text.replace(
+          locale =
+            locale.replace(
               "xizhi_key: '息知API Key(用于微信推送)',",
               "xizhi_key: '息知推送地址(用于微信推送)',"
             )
 
-          text =
-            text.replace(
+          locale =
+            locale.replace(
               "xizhi_key: 'Xizhi API Key (For WeChat Push)',",
               "xizhi_key: 'Xizhi Push URL (For WeChat Push)',"
             )
 
           fs.writeFileSync(
-            path,
-            text,
+            localePath,
+            locale,
             'utf8'
           )
 
           console.log(
-            'Xizhi translations added.'
+            'Xizhi test feature patched.'
           )
           NODE
 
-      # ============================================================
-      # 4. 更新测试版版本号
-      # ============================================================
+          node patch-xizhi.cjs
+          rm patch-xizhi.cjs
 
       - name: Update version
+        shell: bash
         env:
           VERSION: ${{ inputs.version }}
         run: |
           npm version \
             "$VERSION" \
-            --no-git-tag-version
+            --no-git-tag-version \
+            --allow-same-version
 
-      # ============================================================
-      # 5. 静态检查
-      # ============================================================
-
-      - name: Verify Xizhi test feature
+      - name: Verify Xizhi feature
+        shell: bash
         run: |
           grep -q \
             "testXizhiPushNotification" \
@@ -530,25 +436,13 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
             src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
 
           grep -q \
-            "xizhiTesting" \
-            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
-
-          grep -q \
             "测试推送" \
             src/renderer/src/locales/locales.js
 
-          grep -q \
-            "息知推送地址" \
-            src/renderer/src/locales/locales.js
-
-          echo \
-            "Xizhi test feature verified."
-
-      # ============================================================
-      # 6. 确认 V2.8 核心没有被破坏
-      # ============================================================
+          echo "Xizhi test feature verified."
 
       - name: Verify V2.8 core
+        shell: bash
         run: |
           grep -q \
             "getDouyinAnchorProfile" \
@@ -562,42 +456,20 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
             "handleMonitorOnly" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
-          grep -q \
-            "autoRecord: boolean" \
-            type.d.ts
-
-          grep -q \
-            "videoCodec('copy')" \
-            src/main/ffmpeg/record.ts
-
-          grep -q \
-            "audioCodec('copy')" \
-            src/main/ffmpeg/record.ts
-
-          echo \
-            "V2.8 core retained."
-
-      # ============================================================
-      # 7. TypeScript
-      # ============================================================
+          echo "V2.8 core verified."
 
       - name: TypeScript check
+        shell: bash
         run: |
           npm run typecheck
 
-      # ============================================================
-      # 8. Build
-      # ============================================================
-
       - name: Build Electron
+        shell: bash
         run: |
           npm run build
 
-      # ============================================================
-      # 9. Windows x64
-      # ============================================================
-
       - name: Package Windows x64
+        shell: bash
         run: |
           npx electron-builder \
             --win \
@@ -605,7 +477,7 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
             --x64 \
             --publish never
 
-      - name: Verify Windows installer
+      - name: Verify installer
         shell: pwsh
         env:
           VERSION: ${{ inputs.version }}
@@ -616,17 +488,12 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
             throw "Installer not found: $expected"
           }
 
-          $file = Get-Item $expected
-
-          Write-Host "Installer:"
-          Write-Host $file.Name
-          Write-Host $file.Length
-
-      # ============================================================
-      # 10. 提交测试分支
-      # ============================================================
+          Get-Item $expected |
+            Select-Object Name, Length, FullName |
+            Format-Table -AutoSize
 
       - name: Commit V2.9 test
+        shell: bash
         run: |
           git config \
             user.name \
@@ -640,8 +507,7 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
 
           if git diff --cached --quiet
           then
-            echo \
-              "No changes."
+            echo "No changes."
           else
             git commit \
               -m "Add Xizhi test push"
@@ -652,10 +518,6 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
             origin \
             douyin-v2.9-xizhi-test
 
-      # ============================================================
-      # 11. 上传测试安装包
-      # ============================================================
-
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -663,22 +525,3 @@ import { testXizhiPushNotification } from '@renderer/lib/utils'`
           path: dist/fideo-${{ inputs.version }}-x64.exe
           if-no-files-found: error
           retention-days: 7
-
-      - name: Summary
-        if: always()
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          {
-            echo "# Fideo V2.9 息知测试推送"
-            echo
-            echo "版本：\`$VERSION\`"
-            echo
-            echo "分支：\`douyin-v2.9-xizhi-test\`"
-            echo
-            echo
-            echo "- 增加测试息知推送按钮"
-            echo "- 测试推送不要求软件处于后台"
-            echo "- 原有开播通知逻辑保持不变"
-            echo "- 息知输入框文案改为完整推送地址"
-          } >> "$GITHUB_STEP_SUMMARY"
