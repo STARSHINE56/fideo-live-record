@@ -204,4 +204,580 @@ jobs:
               "const hasSession ="
           )
 
-          end =
+          end = find_line(
+              lines,
+              "return {",
+              start + 1
+          )
+
+          indent = (
+              lines[start][
+                  :len(lines[start])
+                  - len(lines[start].lstrip())
+              ]
+          )
+
+          replacement = [
+              f"{indent}const hasSession =",
+              f"{indent}  cookies.some((cookie) =>",
+              f"{indent}    authCookieNames.has(cookie.name)",
+              f"{indent}  )",
+              ""
+          ]
+
+          lines[
+              start:end
+          ] = replacement
+
+          save(
+              path,
+              "\n".join(lines) + "\n"
+          )
+
+          print("OK 3: login detection")
+
+          # ==================================================
+          # 4. 录像日志 Cookie 脱敏
+          # ==================================================
+
+          path = "src/main/ffmpeg/record.ts"
+          lines = load(path).splitlines()
+
+          index = find_line(
+              lines,
+              "writeLog(title, `RecordStream Config:"
+          )
+
+          indent = (
+              lines[index][
+                  :len(lines[index])
+                  - len(lines[index].lstrip())
+              ]
+          )
+
+          replacement = [
+              f"{indent}const safeLogConfig = {{",
+              f"{indent}  ...streamConfig,",
+              f"{indent}  cookie:",
+              f"{indent}    streamConfig.cookie",
+              f"{indent}      ? '[REDACTED]'",
+              f"{indent}      : ''",
+              f"{indent}}}",
+              "",
+              f"{indent}writeLog(",
+              f"{indent}  title,",
+              f"{indent}  'RecordStream Config: ' + JSON.stringify(",
+              f"{indent}    safeLogConfig,",
+              f"{indent}    null,",
+              f"{indent}    2",
+              f"{indent}  )",
+              f"{indent})"
+          ]
+
+          lines[
+              index:index + 1
+          ] = replacement
+
+          save(
+              path,
+              "\n".join(lines) + "\n"
+          )
+
+          print("OK 4: cookie redaction")
+
+          # ==================================================
+          # 5. 启动清理运行时残留状态
+          # ==================================================
+
+          path = (
+              "src/renderer/src/store/"
+              "useStreamConfigStore.ts"
+          )
+
+          lines = load(path).splitlines()
+
+          auto_line = find_line(
+              lines,
+              "streamConfig.autoRecord = true"
+          )
+
+          closing = None
+
+          for i in range(
+              auto_line + 1,
+              len(lines)
+          ):
+              if lines[i].strip() == "}":
+                  closing = i
+                  break
+
+          if closing is None:
+              raise RuntimeError(
+                  "找不到 autoRecord 代码块结尾"
+              )
+
+          indent = "      "
+
+          insertion = [
+              "",
+              f"{indent}if (",
+              f"{indent}  streamConfig.status !== 0",
+              f"{indent}) {{",
+              f"{indent}  shouldUpdate = true",
+              f"{indent}  streamConfig.status = 0",
+              f"{indent}}}",
+              "",
+              f"{indent}if (",
+              f"{indent}  streamConfig.cloudUploadStatus ===",
+              f"{indent}  'uploading'",
+              f"{indent}) {{",
+              f"{indent}  shouldUpdate = true",
+              f"{indent}  streamConfig.cloudUploadStatus =",
+              f"{indent}    undefined",
+              f"{indent}}}"
+          ]
+
+          lines[
+              closing + 1:closing + 1
+          ] = insertion
+
+          save(
+              path,
+              "\n".join(lines) + "\n"
+          )
+
+          print("OK 5: runtime state recovery")
+
+          # ==================================================
+          # 6. 外部链接只允许 http / https
+          # ==================================================
+
+          path = "src/main/index.ts"
+          text = load(path)
+
+          marker = (
+              "async function checkUpdate() {"
+          )
+
+          if marker not in text:
+              raise RuntimeError(
+                  "找不到 checkUpdate"
+              )
+
+          helper = """function openSafeExternalUrl(
+            value: string
+          ) {
+            try {
+              const url = new URL(value)
+
+              if (
+                url.protocol !== 'https:' &&
+                url.protocol !== 'http:'
+              ) {
+                return false
+              }
+
+              void shell.openExternal(
+                url.toString()
+              )
+
+              return true
+            } catch {
+              return false
+            }
+          }
+
+          async function checkUpdate() {"""
+
+          text = text.replace(
+              marker,
+              helper,
+              1
+          )
+
+          old = """  mainWindow.webContents.setWindowOpenHandler((details) => {
+            shell.openExternal(details.url)
+            return { action: 'deny' }
+          })"""
+
+          new = """  mainWindow.webContents.setWindowOpenHandler((details) => {
+            openSafeExternalUrl(
+              details.url
+            )
+
+            return {
+              action: 'deny'
+            }
+          })"""
+
+          if old not in text:
+              raise RuntimeError(
+                  "找不到 windowOpenHandler"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1
+          )
+
+          old = """  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
+            shell.openExternal(url)
+          })"""
+
+          new = """  ipcMain.handle(
+            NAV_BY_DEFAULT_BROWSER,
+            (_, url: string) => {
+              return openSafeExternalUrl(
+                url
+              )
+            }
+          )"""
+
+          if old not in text:
+              raise RuntimeError(
+                  "找不到 NAV_BY_DEFAULT_BROWSER"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1
+          )
+
+          # ==================================================
+          # 7. WebDAV 串行上传
+          # ==================================================
+
+          marker = (
+              "export const writeLog = "
+              "writeLogWrapper(app.getPath('userData'))"
+          )
+
+          queue = """export const writeLog = writeLogWrapper(app.getPath('userData'))
+
+          let webdavUploadQueue:
+            Promise<void> =
+            Promise.resolve()
+
+          function enqueueWebdavUpload(
+            request:
+              Parameters<
+                typeof uploadWebdav
+              >[0]
+          ) {
+            const task =
+              webdavUploadQueue.then(
+                () =>
+                  uploadWebdav(
+                    request
+                  ),
+                () =>
+                  uploadWebdav(
+                    request
+                  )
+              )
+
+            webdavUploadQueue =
+              task.then(
+                () => undefined,
+                () => undefined
+              )
+
+            return task
+          }"""
+
+          if marker not in text:
+              raise RuntimeError(
+                  "找不到 writeLog"
+              )
+
+          text = text.replace(
+              marker,
+              queue,
+              1
+          )
+
+          old = """  ipcMain.handle(
+            UPLOAD_WEBDAV,
+            async (_, request) => {
+              return await uploadWebdav(
+                request
+              )
+            }
+          )"""
+
+          new = """  ipcMain.handle(
+            UPLOAD_WEBDAV,
+            async (_, request) => {
+              return await enqueueWebdavUpload(
+                request
+              )
+            }
+          )"""
+
+          if old not in text:
+              raise RuntimeError(
+                  "找不到 UPLOAD_WEBDAV"
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1
+          )
+
+          save(
+              path,
+              text
+          )
+
+          print("OK 6-7: main process")
+
+          # ==================================================
+          # 8. WebDAV HTTPS 校验
+          # ==================================================
+
+          path = "src/main/webdav.ts"
+          text = load(path)
+
+          marker = "const cleanBaseUrl = ("
+
+          position = text.find(
+              marker
+          )
+
+          if position < 0:
+              raise RuntimeError(
+                  "找不到 cleanBaseUrl"
+              )
+
+          validator = """const validateWebdavUrl = (
+            value: string
+          ) => {
+            const trimmed =
+              String(
+                value || ''
+              ).trim()
+
+            let parsed: URL
+
+            try {
+              parsed = new URL(
+                trimmed
+              )
+            } catch {
+              throw new Error(
+                'WebDAV 地址格式无效'
+              )
+            }
+
+            if (
+              parsed.protocol !== 'https:'
+            ) {
+              throw new Error(
+                'WebDAV 地址必须使用 HTTPS'
+              )
+            }
+
+            return trimmed
+          }
+
+          """
+
+          text = (
+              text[:position]
+              + validator
+              + text[position:]
+          )
+
+          upload_pos = text.find(
+              "export async function uploadWebdav("
+          )
+
+          if upload_pos < 0:
+              raise RuntimeError(
+                  "找不到 uploadWebdav"
+              )
+
+          request_pos = text.find(
+              "      request.url,",
+              upload_pos
+          )
+
+          if request_pos < 0:
+              raise RuntimeError(
+                  "找不到 uploadWebdav request.url"
+              )
+
+          text = (
+              text[:request_pos]
+              + """      validateWebdavUrl(
+                request.url
+              ),"""
+              + text[
+                  request_pos
+                  + len(
+                      "      request.url,"
+                  ):
+              ]
+          )
+
+          test_pos = text.find(
+              "export async function testWebdav("
+          )
+
+          if test_pos < 0:
+              raise RuntimeError(
+                  "找不到 testWebdav"
+              )
+
+          try_pos = text.find(
+              "  try {",
+              test_pos
+          )
+
+          if try_pos < 0:
+              raise RuntimeError(
+                  "找不到 testWebdav try"
+              )
+
+          insert_at = (
+              try_pos
+              + len("  try {")
+          )
+
+          text = (
+              text[:insert_at]
+              + """
+              config = {
+                ...config,
+                url:
+                  validateWebdavUrl(
+                    config.url
+                  )
+              }"""
+              + text[insert_at:]
+          )
+
+          save(
+              path,
+              text
+          )
+
+          print("OK 8: WebDAV HTTPS")
+
+          print(
+              "ALL FIXES APPLIED"
+          )
+          PY
+
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q \
+            '"version": "1.1.11-beta.1"' \
+            package.json
+
+          grep -q \
+            "String(cookie).trim()" \
+            src/main/crawler/plugins/douyin.js
+
+          grep -q \
+            "\[REDACTED\]" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "streamConfig.status = 0" \
+            src/renderer/src/store/useStreamConfigStore.ts
+
+          grep -q \
+            "openSafeExternalUrl" \
+            src/main/index.ts
+
+          grep -q \
+            "enqueueWebdavUpload" \
+            src/main/index.ts
+
+          grep -q \
+            "validateWebdavUrl" \
+            src/main/webdav.ts
+
+          git diff --check
+
+          echo "Source checks passed."
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Show changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff --check
+          git status --short
+          git diff --stat
+
+      - name: Commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add \
+            package.json \
+            package-lock.json \
+            src/main/index.ts \
+            src/main/webdav.ts \
+            src/main/douyin-session.ts \
+            src/main/ffmpeg/record.ts \
+            src/main/crawler/plugins/douyin.js \
+            src/renderer/src/store/useStreamConfigStore.ts
+
+          git commit \
+            -m "fix: improve V2.10 stability"
+
+      - name: Push fix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            --force \
+            origin \
+            "$FIX_BRANCH"
+
+      - name: Promote verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            origin \
+            "HEAD:${SOURCE_BRANCH}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "# V2.10 Stability Fix V5"
+            echo ""
+            echo "✅ 抖音完整登录 Cookie"
+            echo "✅ 登录状态判断"
+            echo "✅ Cookie 日志脱敏"
+            echo "✅ 异常退出状态恢复"
+            echo "✅ WebDAV 串行上传"
+            echo "✅ WebDAV HTTPS 校验"
+            echo "✅ 外部链接白名单"
+            echo "✅ 版本 1.1.11-beta.1"
+            echo "✅ TypeScript"
+            echo "✅ Build"
+          } >> "$GITHUB_STEP_SUMMARY"
