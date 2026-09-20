@@ -18,6 +18,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout tested V2.8
         uses: actions/checkout@v4
@@ -26,7 +30,6 @@ jobs:
           fetch-depth: 0
 
       - name: Create V2.9 test branch
-        shell: bash
         run: |
           git switch -C douyin-v2.9-xizhi-test
 
@@ -37,385 +40,411 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        shell: bash
         run: |
           npm ci
 
-      - name: Patch Xizhi test feature
-        shell: bash
+      - name: Add Xizhi test push function
         run: |
-          cat > patch-xizhi.cjs <<'NODE'
+          cat > "$RUNNER_TEMP/patch-utils.cjs" <<'NODE'
           const fs = require('fs')
 
-          const utilsPath =
+          const path =
             'src/renderer/src/lib/utils.ts'
 
-          const settingsPath =
-            'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx'
-
-          const localePath =
-            'src/renderer/src/locales/locales.js'
-
-          let utils =
+          let text =
             fs.readFileSync(
-              utilsPath,
+              path,
               'utf8'
             )
 
           if (
-            !utils.includes(
+            !text.includes(
               'testXizhiPushNotification'
             )
           ) {
-            utils += `
-
-export async function testXizhiPushNotification(options: {
-  key: string
-  title: string
-  content?: string
-}): Promise<boolean> {
-  const key = options.key.trim()
-
-  if (!key) {
-    return false
-  }
-
-  const titleAndContent =
-    options.content
-      ? options.title + ' - ' + options.content
-      : options.title
-
-  const separator =
-    key.includes('?')
-      ? '&'
-      : '?'
-
-  const response =
-    await fetch(
-      key +
-        separator +
-        'title=' +
-        encodeURIComponent(
-          titleAndContent
-        )
-    )
-
-  return response.ok
-}
-`
+            text += [
+              '',
+              '',
+              'export async function testXizhiPushNotification(options: {',
+              '  key: string',
+              '  title: string',
+              '  content?: string',
+              '}): Promise<boolean> {',
+              '  const key = options.key.trim()',
+              '',
+              '  if (!key) {',
+              '    return false',
+              '  }',
+              '',
+              '  const titleAndContent =',
+              "    options.content",
+              "      ? options.title + ' - ' + options.content",
+              '      : options.title',
+              '',
+              '  const separator =',
+              "    key.includes('?')",
+              "      ? '&'",
+              "      : '?'",
+              '',
+              '  const response = await fetch(',
+              '    key +',
+              '      separator +',
+              "      'title=' +",
+              '      encodeURIComponent(titleAndContent)',
+              '  )',
+              '',
+              '  return response.ok',
+              '}',
+              ''
+            ].join('\n')
 
             fs.writeFileSync(
-              utilsPath,
-              utils,
+              path,
+              text,
               'utf8'
             )
           }
 
-          let settings =
+          console.log(
+            'Xizhi test function added.'
+          )
+          NODE
+
+          node "$RUNNER_TEMP/patch-utils.cjs"
+
+      - name: Add Xizhi test button
+        run: |
+          cat > "$RUNNER_TEMP/patch-settings.cjs" <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx'
+
+          let text =
             fs.readFileSync(
-              settingsPath,
+              path,
               'utf8'
             )
 
           if (
-            !settings.includes(
+            !text.includes(
               "import { useToast } from '@renderer/hooks/useToast'"
             )
           ) {
-            settings =
-              settings.replace(
+            text =
+              text.replace(
                 "import { useEffect, useState } from 'react'",
-                "import { useEffect, useState } from 'react'\nimport { useToast } from '@renderer/hooks/useToast'\nimport { testXizhiPushNotification } from '@renderer/lib/utils'"
+                [
+                  "import { useEffect, useState } from 'react'",
+                  "import { useToast } from '@renderer/hooks/useToast'",
+                  "import { testXizhiPushNotification } from '@renderer/lib/utils'"
+                ].join('\n')
               )
           }
 
-          const stateMarker =
-`  const [
-    douyinLoggedIn,
-    setDouyinLoggedIn
-  ] = useState(false)`
-
           if (
-            !settings.includes(
+            !text.includes(
               'xizhiTesting'
             )
           ) {
-            settings =
-              settings.replace(
-                stateMarker,
-`${stateMarker}
+            const marker = [
+              '  const [',
+              '    douyinLoggedIn,',
+              '    setDouyinLoggedIn',
+              '  ] = useState(false)'
+            ].join('\n')
 
-  const [
-    xizhiTesting,
-    setXizhiTesting
-  ] = useState(false)
+            const replacement = [
+              marker,
+              '',
+              '  const [',
+              '    xizhiTesting,',
+              '    setXizhiTesting',
+              '  ] = useState(false)',
+              '',
+              '  const {',
+              '    toast',
+              '  } = useToast()'
+            ].join('\n')
 
-  const {
-    toast
-  } = useToast()`
+            if (
+              !text.includes(marker)
+            ) {
+              throw new Error(
+                'State marker not found'
+              )
+            }
+
+            text =
+              text.replace(
+                marker,
+                replacement
               )
           }
 
-          const handlerMarker =
-            '  const handleSelectDir = async () => {'
-
           if (
-            !settings.includes(
+            !text.includes(
               'handleTestXizhi'
             )
           ) {
-            const handler =
-`  const handleTestXizhi =
-    async () => {
-      const key =
-        form
-          .getValues(
-            'xizhiKey'
-          )
-          ?.trim()
+            const marker =
+              '  const handleSelectDir = async () => {'
 
-      if (!key) {
-        toast({
-          title:
-            t(
-              'default_settings.xizhi_test_failed'
-            ),
+            const handler = [
+              '  const handleTestXizhi =',
+              '    async () => {',
+              '      const key =',
+              '        form',
+              '          .getValues(',
+              "            'xizhiKey'",
+              '          )',
+              '          ?.trim()',
+              '',
+              '      if (!key) {',
+              '        toast({',
+              '          title:',
+              '            t(',
+              "              'default_settings.xizhi_test_failed'",
+              '            ),',
+              '          description:',
+              '            t(',
+              "              'default_settings.xizhi_key_required'",
+              '            ),',
+              "          variant: 'destructive'",
+              '        })',
+              '',
+              '        return',
+              '      }',
+              '',
+              '      setXizhiTesting(true)',
+              '',
+              '      try {',
+              '        const success =',
+              '          await testXizhiPushNotification({',
+              '            key,',
+              '            title:',
+              '              t(',
+              "                'default_settings.xizhi_test_title'",
+              '              ),',
+              '            content:',
+              '              t(',
+              "                'default_settings.xizhi_test_content'",
+              '              )',
+              '          })',
+              '',
+              '        if (!success) {',
+              "          throw new Error('XIZHI_TEST_FAILED')",
+              '        }',
+              '',
+              '        toast({',
+              '          title:',
+              '            t(',
+              "              'default_settings.xizhi_test_success'",
+              '            ),',
+              '          description:',
+              '            t(',
+              "              'default_settings.xizhi_test_success_desc'",
+              '            )',
+              '        })',
+              '      } catch {',
+              '        toast({',
+              '          title:',
+              '            t(',
+              "              'default_settings.xizhi_test_failed'",
+              '            ),',
+              '          description:',
+              '            t(',
+              "              'default_settings.xizhi_test_failed_desc'",
+              '            ),',
+              "          variant: 'destructive'",
+              '        })',
+              '      } finally {',
+              '        setXizhiTesting(false)',
+              '      }',
+              '    }',
+              '',
+              ''
+            ].join('\n')
 
-          description:
-            t(
-              'default_settings.xizhi_key_required'
-            ),
-
-          variant:
-            'destructive'
-        })
-
-        return
-      }
-
-      setXizhiTesting(true)
-
-      try {
-        const success =
-          await testXizhiPushNotification({
-            key,
-            title:
-              t(
-                'default_settings.xizhi_test_title'
-              ),
-            content:
-              t(
-                'default_settings.xizhi_test_content'
+            if (
+              !text.includes(marker)
+            ) {
+              throw new Error(
+                'handleSelectDir marker not found'
               )
-          })
+            }
 
-        if (!success) {
-          throw new Error(
-            'XIZHI_TEST_FAILED'
-          )
-        }
-
-        toast({
-          title:
-            t(
-              'default_settings.xizhi_test_success'
-            ),
-
-          description:
-            t(
-              'default_settings.xizhi_test_success_desc'
-            )
-        })
-      } catch {
-        toast({
-          title:
-            t(
-              'default_settings.xizhi_test_failed'
-            ),
-
-          description:
-            t(
-              'default_settings.xizhi_test_failed_desc'
-            ),
-
-          variant:
-            'destructive'
-        })
-      } finally {
-        setXizhiTesting(false)
-      }
-    }
-
-
-`
-
-            settings =
-              settings.replace(
-                handlerMarker,
-                handler +
-                  handlerMarker
+            text =
+              text.replace(
+                marker,
+                handler + marker
               )
           }
 
-          const oldField =
-`                <FormField
-                  control={form.control}
-                  name="xizhiKey"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('default_settings.xizhi_key')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder={t('default_settings.xizhi_key_placeholder')}
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />`
+          const oldField = [
+            '                <FormField',
+            '                  control={form.control}',
+            '                  name="xizhiKey"',
+            '                  render={({ field }) => (',
+            '                    <FormItem>',
+            "                      <FormLabel>{t('default_settings.xizhi_key')}</FormLabel>",
+            '                      <FormControl>',
+            '                        <Input',
+            "                          placeholder={t('default_settings.xizhi_key_placeholder')}",
+            '                          {...field}',
+            '                        />',
+            '                      </FormControl>',
+            '                      <FormMessage />',
+            '                    </FormItem>',
+            '                  )}',
+            '                />'
+          ].join('\n')
 
-          const newField =
-`                <FormField
-                  control={form.control}
-                  name="xizhiKey"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>
-                        {t(
-                          'default_settings.xizhi_key'
-                        )}
-                      </FormLabel>
-
-                      <FormControl>
-                        <div className="flex gap-2">
-                          <Input
-                            placeholder={t(
-                              'default_settings.xizhi_key_placeholder'
-                            )}
-                            {...field}
-                          />
-
-                          <Button
-                            variant="outline"
-                            type="button"
-                            disabled={
-                              xizhiTesting
-                            }
-                            onClick={
-                              handleTestXizhi
-                            }
-                          >
-                            {xizhiTesting
-                              ? t(
-                                  'default_settings.xizhi_testing'
-                                )
-                              : t(
-                                  'default_settings.xizhi_test'
-                                )}
-                          </Button>
-                        </div>
-                      </FormControl>
-
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />`
+          const newField = [
+            '                <FormField',
+            '                  control={form.control}',
+            '                  name="xizhiKey"',
+            '                  render={({ field }) => (',
+            '                    <FormItem>',
+            '                      <FormLabel>',
+            "                        {t('default_settings.xizhi_key')}",
+            '                      </FormLabel>',
+            '',
+            '                      <FormControl>',
+            '                        <div className="flex gap-2">',
+            '                          <Input',
+            "                            placeholder={t('default_settings.xizhi_key_placeholder')}",
+            '                            {...field}',
+            '                          />',
+            '',
+            '                          <Button',
+            '                            variant="outline"',
+            '                            type="button"',
+            '                            disabled={xizhiTesting}',
+            '                            onClick={handleTestXizhi}',
+            '                          >',
+            '                            {xizhiTesting',
+            "                              ? t('default_settings.xizhi_testing')",
+            "                              : t('default_settings.xizhi_test')}",
+            '                          </Button>',
+            '                        </div>',
+            '                      </FormControl>',
+            '',
+            '                      <FormMessage />',
+            '                    </FormItem>',
+            '                  )}',
+            '                />'
+          ].join('\n')
 
           if (
-            settings.includes(
-              oldField
-            )
+            text.includes(oldField)
           ) {
-            settings =
-              settings.replace(
+            text =
+              text.replace(
                 oldField,
                 newField
               )
           }
 
           fs.writeFileSync(
-            settingsPath,
-            settings,
+            path,
+            text,
             'utf8'
           )
 
-          let locale =
+          console.log(
+            'Xizhi test button added.'
+          )
+          NODE
+
+          node "$RUNNER_TEMP/patch-settings.cjs"
+
+      - name: Add Xizhi translations
+        run: |
+          cat > "$RUNNER_TEMP/patch-locales.cjs" <<'NODE'
+          const fs = require('fs')
+
+          const path =
+            'src/renderer/src/locales/locales.js'
+
+          let text =
             fs.readFileSync(
-              localePath,
+              path,
               'utf8'
             )
 
           if (
-            !locale.includes(
+            !text.includes(
               "xizhi_test: 'Test Push'"
             )
           ) {
-            locale =
-              locale.replace(
+            text =
+              text.replace(
                 "xizhi_key_placeholder: 'Please enter the Xizhi API Key',",
-`xizhi_key_placeholder: 'Please enter the Xizhi push URL',
-        xizhi_test: 'Test Push',
-        xizhi_testing: 'Sending...',
-        xizhi_test_title: 'Fideo Test Push',
-        xizhi_test_content: 'Xizhi push configuration is working',
-        xizhi_test_success: 'Push successful',
-        xizhi_test_success_desc: 'The Xizhi test message has been sent',
-        xizhi_test_failed: 'Push failed',
-        xizhi_test_failed_desc: 'Please check the Xizhi push URL and network',
-        xizhi_key_required: 'Please enter the Xizhi push URL first',`
+                [
+                  "xizhi_key_placeholder: 'Please enter the Xizhi push URL',",
+                  "        xizhi_test: 'Test Push',",
+                  "        xizhi_testing: 'Sending...',",
+                  "        xizhi_test_title: 'Fideo Test Push',",
+                  "        xizhi_test_content: 'Xizhi push configuration is working',",
+                  "        xizhi_test_success: 'Push successful',",
+                  "        xizhi_test_success_desc: 'The Xizhi test message has been sent',",
+                  "        xizhi_test_failed: 'Push failed',",
+                  "        xizhi_test_failed_desc: 'Please check the Xizhi push URL and network',",
+                  "        xizhi_key_required: 'Please enter the Xizhi push URL first',"
+                ].join('\n')
               )
           }
 
           if (
-            !locale.includes(
+            !text.includes(
               "xizhi_test: '测试推送'"
             )
           ) {
-            locale =
-              locale.replace(
+            text =
+              text.replace(
                 "xizhi_key_placeholder: '请输入息知API Key',",
-`xizhi_key_placeholder: '请输入息知完整推送地址',
-        xizhi_test: '测试推送',
-        xizhi_testing: '发送中...',
-        xizhi_test_title: 'Fideo 测试推送',
-        xizhi_test_content: '息知推送配置成功',
-        xizhi_test_success: '推送成功',
-        xizhi_test_success_desc: '息知测试消息已发送',
-        xizhi_test_failed: '推送失败',
-        xizhi_test_failed_desc: '请检查息知推送地址和网络连接',
-        xizhi_key_required: '请先填写息知推送地址',`
+                [
+                  "xizhi_key_placeholder: '请输入息知完整推送地址',",
+                  "        xizhi_test: '测试推送',",
+                  "        xizhi_testing: '发送中...',",
+                  "        xizhi_test_title: 'Fideo 测试推送',",
+                  "        xizhi_test_content: '息知推送配置成功',",
+                  "        xizhi_test_success: '推送成功',",
+                  "        xizhi_test_success_desc: '息知测试消息已发送',",
+                  "        xizhi_test_failed: '推送失败',",
+                  "        xizhi_test_failed_desc: '请检查息知推送地址和网络连接',",
+                  "        xizhi_key_required: '请先填写息知推送地址',"
+                ].join('\n')
               )
           }
 
-          locale =
-            locale.replace(
+          text =
+            text.replace(
               "xizhi_key: '息知API Key(用于微信推送)',",
               "xizhi_key: '息知推送地址(用于微信推送)',"
             )
 
-          locale =
-            locale.replace(
+          text =
+            text.replace(
               "xizhi_key: 'Xizhi API Key (For WeChat Push)',",
               "xizhi_key: 'Xizhi Push URL (For WeChat Push)',"
             )
 
           fs.writeFileSync(
-            localePath,
-            locale,
+            path,
+            text,
             'utf8'
           )
 
           console.log(
-            'Xizhi test feature patched.'
+            'Xizhi translations added.'
           )
           NODE
 
-          node patch-xizhi.cjs
-          rm patch-xizhi.cjs
+          node "$RUNNER_TEMP/patch-locales.cjs"
 
       - name: Update version
-        shell: bash
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -425,7 +454,6 @@ export async function testXizhiPushNotification(options: {
             --allow-same-version
 
       - name: Verify Xizhi feature
-        shell: bash
         run: |
           grep -q \
             "testXizhiPushNotification" \
@@ -436,13 +464,20 @@ export async function testXizhiPushNotification(options: {
             src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
 
           grep -q \
+            "xizhiTesting" \
+            src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx
+
+          grep -q \
             "测试推送" \
+            src/renderer/src/locales/locales.js
+
+          grep -q \
+            "息知推送地址" \
             src/renderer/src/locales/locales.js
 
           echo "Xizhi test feature verified."
 
       - name: Verify V2.8 core
-        shell: bash
         run: |
           grep -q \
             "getDouyinAnchorProfile" \
@@ -456,20 +491,29 @@ export async function testXizhiPushNotification(options: {
             "handleMonitorOnly" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
 
-          echo "V2.8 core verified."
+          grep -q \
+            "autoRecord: boolean" \
+            type.d.ts
+
+          grep -q \
+            "videoCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          grep -q \
+            "audioCodec('copy')" \
+            src/main/ffmpeg/record.ts
+
+          echo "V2.8 core retained."
 
       - name: TypeScript check
-        shell: bash
         run: |
           npm run typecheck
 
       - name: Build Electron
-        shell: bash
         run: |
           npm run build
 
       - name: Package Windows x64
-        shell: bash
         run: |
           npx electron-builder \
             --win \
@@ -488,12 +532,13 @@ export async function testXizhiPushNotification(options: {
             throw "Installer not found: $expected"
           }
 
-          Get-Item $expected |
-            Select-Object Name, Length, FullName |
-            Format-Table -AutoSize
+          $file = Get-Item $expected
+
+          Write-Host "Installer:"
+          Write-Host $file.Name
+          Write-Host $file.Length
 
       - name: Commit V2.9 test
-        shell: bash
         run: |
           git config \
             user.name \
@@ -525,3 +570,19 @@ export async function testXizhiPushNotification(options: {
           path: dist/fideo-${{ inputs.version }}-x64.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "# Fideo V2.9 Xizhi Test Push"
+            echo
+            echo "Version: $VERSION"
+            echo "Branch: douyin-v2.9-xizhi-test"
+            echo
+            echo "- Xizhi test push button added"
+            echo "- Test push works while app is visible"
+            echo "- Existing live notification logic retained"
+          } >> "$GITHUB_STEP_SUMMARY"
