@@ -1,4 +1,4 @@
-name: Prepare V2.10 WebDAV Douyin Fix V3
+name: Prepare V2.10 WebDAV Douyin Fix V4
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-v210-webdav-douyin-fix-v3
+  group: prepare-v210-webdav-douyin-fix-v4
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v3
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v4
 
 jobs:
   prepare:
-    name: Prepare V2.10 V3
+    name: Prepare V2.10 V4
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKUP_BRANCH="backup-v210-v3-${GITHUB_RUN_ID}"
+          BACKUP_BRANCH="backup-v210-v4-${GITHUB_RUN_ID}"
 
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
@@ -1505,35 +1505,62 @@ jobs:
               "<CloudStorageSettings"
               not in settings
           ):
-              marker = """                <FormField
-                    control={form.control}
-                    name="logsDir"
-          """
+              logs_name = 'name="logsDir"'
 
-              insert = """                <CloudStorageSettings
-                    form={form}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="logsDir"
-          """
+              logs_index = settings.find(
+                  logs_name
+              )
 
               if (
-                  marker not in
-                  settings
+                  logs_index == -1
               ):
                   raise RuntimeError(
-                      "Default settings logsDir marker not found"
+                      "Default settings logsDir field not found"
                   )
+
+              form_index = settings.rfind(
+                  "<FormField",
+                  0,
+                  logs_index
+              )
+
+              if (
+                  form_index == -1
+              ):
+                  raise RuntimeError(
+                      "Default settings logsDir FormField not found"
+                  )
+
+              line_start = (
+                  settings.rfind(
+                      "\n",
+                      0,
+                      form_index
+                  ) + 1
+              )
+
+              indent = settings[
+                  line_start:form_index
+              ]
+
+              component = (
+                  indent +
+                  "<CloudStorageSettings\n" +
+                  indent +
+                  "  form={form}\n" +
+                  indent +
+                  "/>\n\n"
+              )
+
+              settings = (
+                  settings[:line_start] +
+                  component +
+                  settings[line_start:]
+              )
 
               write(
                   settings_path,
-                  settings.replace(
-                      marker,
-                      insert,
-                      1
-                  )
+                  settings
               )
 
 
@@ -2733,7 +2760,7 @@ jobs:
 
 
           print(
-              "V2.10 V3 patch finished."
+              "V2.10 V4 patch finished."
           )
           PY
 
@@ -2874,7 +2901,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# Fideo V2.10 V3"
+            echo "# Fideo V2.10 V4"
             echo ""
             echo "## WebDAV"
             echo "✅ 小蓝云盘 WebDAV"
