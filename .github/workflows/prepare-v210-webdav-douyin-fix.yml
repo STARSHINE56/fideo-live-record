@@ -1,4 +1,4 @@
-name: Prepare V2.10 WebDAV and Douyin Fix
+name: Prepare V2.10 WebDAV and Douyin Fix V2
 
 on:
   workflow_dispatch:
@@ -7,21 +7,21 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-v210-webdav-douyin-fix
+  group: prepare-v210-webdav-douyin-fix-v2
   cancel-in-progress: false
 
 env:
   SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
-  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix
+  FEATURE_BRANCH: douyin-v2.10-webdav-douyin-fix-v2
 
 jobs:
   prepare:
-    name: Prepare V2.10
+    name: Prepare V2.10 V2
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
-      - name: Checkout current tested source
+      - name: Checkout tested source
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_BRANCH }}
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BACKUP_BRANCH="backup-v210-before-cloud-${GITHUB_RUN_NUMBER}"
+          BACKUP_BRANCH="backup-v210-v2-${GITHUB_RUN_NUMBER}"
 
           git branch "$BACKUP_BRANCH"
           git push origin "$BACKUP_BRANCH"
@@ -65,70 +65,89 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply V2.10 patch
+      - name: Apply V2.10 changes
         shell: bash
         run: |
           set -euo pipefail
 
-          cat > /tmp/v210_patch.py <<'PY'
+          cat > /tmp/v210_fix.py <<'PY'
           from pathlib import Path
-          from textwrap import dedent
+          import re
 
 
-          def read_file(path: str) -> str:
+          def read(path):
               return Path(path).read_text(
                   encoding="utf-8"
               )
 
 
-          def write_file(
-              path: str,
-              content: str
-          ) -> None:
-              file_path = Path(path)
-
-              file_path.parent.mkdir(
+          def write(path, content):
+              p = Path(path)
+              p.parent.mkdir(
                   parents=True,
                   exist_ok=True
               )
-
-              file_path.write_text(
-                  dedent(content).lstrip(),
+              p.write_text(
+                  content,
                   encoding="utf-8"
               )
 
 
-          def replace_once(
-              path: str,
-              old: str,
-              new: str
-          ) -> None:
-              content = read_file(path)
+          def replace_required(
+              path,
+              old,
+              new
+          ):
+              text = read(path)
 
-              old = dedent(old)
-              new = dedent(new)
-
-              if new in content:
+              if new in text:
                   print(
                       f"Already patched: {path}"
                   )
                   return
 
-              if old not in content:
+              if old not in text:
                   raise RuntimeError(
-                      f"Patch marker not found: "
-                      f"{path}\n\n{old[:500]}"
+                      f"Marker not found: {path}"
                   )
 
-              content = content.replace(
-                  old,
-                  new,
-                  1
+              write(
+                  path,
+                  text.replace(
+                      old,
+                      new,
+                      1
+                  )
               )
 
-              Path(path).write_text(
-                  content,
-                  encoding="utf-8"
+              print(
+                  f"Patched: {path}"
+              )
+
+
+          def regex_replace_required(
+              path,
+              pattern,
+              replacement
+          ):
+              text = read(path)
+
+              new_text, count = re.subn(
+                  pattern,
+                  replacement,
+                  text,
+                  count=1,
+                  flags=re.S
+              )
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"Regex marker not found: {path}"
+                  )
+
+              write(
+                  path,
+                  new_text
               )
 
               print(
@@ -137,1095 +156,2667 @@ jobs:
 
 
           # ============================================================
-          # WebDAV main process
+          # 1. Rewrite type.d.ts completely
           # ============================================================
 
-          write_file(
+          write(
+              "type.d.ts",
+              """interface IRecordedFile {
+            path: string
+            cloudName: string
+          }
+
+          type CloudUploadStatus =
+            | 'uploading'
+            | 'success'
+            | 'error'
+
+          interface IStreamConfig {
+            id: string
+            title: string
+            roomUrl: string
+            filename: string
+            directory: string
+            proxy?: string
+            cookie?: string
+            interval: number
+            liveUrls?: string[]
+            segmentTime?: string | ''
+            line: string
+            status: number
+            convertToMP4: boolean
+            detectResolution: boolean
+            autoRecord: boolean
+            cloudUploadStatus?: CloudUploadStatus
+          }
+
+          type Lang = 'en' | 'cn'
+
+          interface IDefaultDefaultSettingsConfig {
+            directory: string
+            lang: Lang
+            xizhiKey?: string
+
+            webdavEnabled?: boolean
+            webdavUrl?: string
+            webdavUsername?: string
+            webdavPassword?: string
+            webdavRemoteRoot?: string
+            webdavDeleteAfterUpload?: boolean
+            webdavRetryTimes?: number
+          }
+
+          type IFfmpegProgressInfo = Record<
+            string,
+            {
+              targetSize: number
+              timemark: string
+            }
+          >
+
+          interface IDownloadDepProgressInfo {
+            title: string
+            showRetry: boolean
+            downloading: boolean
+            progress: number
+          }
+
+          interface IWebControlSetting {
+            webControlPath: string
+            enableWebControl: boolean
+            email: string
+          }
+          """
+          )
+
+          # remove indentation from generated file
+          type_path = Path(
+              "type.d.ts"
+          )
+
+          lines = type_path.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          type_path.write_text(
+              "\n".join(
+                  line[10:]
+                  if line.startswith(
+                      "          "
+                  )
+                  else line
+                  for line in lines
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          # ============================================================
+          # 2. Main WebDAV implementation
+          # ============================================================
+
+          write(
               "src/main/webdav.ts",
-              r"""
-              import fs from 'node:fs'
-              import path from 'node:path'
+              """import fs from 'node:fs'
+          import path from 'node:path'
 
-              import axios from 'axios'
+          import axios from 'axios'
 
-              export interface IWebdavConfig {
+          export interface IWebdavConfig {
+            url: string
+            username: string
+            password: string
+            remoteRoot?: string
+          }
+
+          export interface IWebdavFile {
+            path: string
+            cloudName: string
+          }
+
+          export interface IWebdavUploadRequest
+            extends IWebdavConfig {
+            streamerName: string
+            files: IWebdavFile[]
+            deleteAfterUpload?: boolean
+            retryTimes?: number
+          }
+
+          const authHeader = (
+            username: string,
+            password: string
+          ) =>
+            `Basic ${Buffer.from(
+              `${username}:${password}`
+            ).toString('base64')}`
+
+          const cleanBase = (
+            value: string
+          ) =>
+            value
+              .trim()
+              .replace(/\\/+$/, '')
+
+          const pathParts = (
+            value?: string
+          ) =>
+            (value || '/')
+              .split('/')
+              .map(
+                item =>
+                  item.trim()
+              )
+              .filter(Boolean)
+
+          const safeFolderName = (
+            value: string
+          ) => {
+            const result =
+              String(
+                value || ''
+              )
+                .replace(
+                  /[<>:"/\\\\|?*\\u0000-\\u001f]/g,
+                  '_'
+                )
+                .replace(
+                  /[. ]+$/g,
+                  ''
+                )
+                .trim()
+
+            return (
+              result ||
+              '主播'
+            )
+          }
+
+          const remoteUrl = (
+            base: string,
+            segments: string[]
+          ) => {
+            const root =
+              cleanBase(base)
+
+            if (
+              segments.length ===
+              0
+            ) {
+              return `${root}/`
+            }
+
+            return (
+              `${root}/` +
+              segments
+                .map(
+                  item =>
+                    encodeURIComponent(
+                      item
+                    )
+                )
+                .join('/')
+            )
+          }
+
+          const ok = (
+            status: number
+          ) =>
+            status >= 200 &&
+            status < 300
+
+          async function ensureFolder(
+            config: IWebdavConfig,
+            segments: string[]
+          ) {
+            const current:
+              string[] = []
+
+            for (
+              const part of
+              segments
+            ) {
+              current.push(
+                part
+              )
+
+              const response =
+                await axios.request({
+                  method:
+                    'MKCOL',
+
+                  url:
+                    remoteUrl(
+                      config.url,
+                      current
+                    ),
+
+                  headers: {
+                    Authorization:
+                      authHeader(
+                        config.username,
+                        config.password
+                      )
+                  },
+
+                  validateStatus:
+                    () => true
+                })
+
+              if (
+                ![
+                  200,
+                  201,
+                  204,
+                  301,
+                  405
+                ].includes(
+                  response.status
+                )
+              ) {
+                throw new Error(
+                  `创建云端目录失败 HTTP ${response.status}`
+                )
+              }
+            }
+          }
+
+          async function remoteSize(
+            config: IWebdavConfig,
+            segments: string[]
+          ) {
+            const url =
+              remoteUrl(
+                config.url,
+                segments
+              )
+
+            const authorization =
+              authHeader(
+                config.username,
+                config.password
+              )
+
+            const head =
+              await axios.head(
+                url,
+                {
+                  headers: {
+                    Authorization:
+                      authorization
+                  },
+
+                  validateStatus:
+                    () => true
+                }
+              )
+
+            if (
+              ok(
+                head.status
+              )
+            ) {
+              const size =
+                Number(
+                  head.headers[
+                    'content-length'
+                  ]
+                )
+
+              if (
+                Number.isFinite(
+                  size
+                )
+              ) {
+                return size
+              }
+            }
+
+            const result =
+              await axios.request({
+                method:
+                  'PROPFIND',
+
+                url,
+
+                headers: {
+                  Authorization:
+                    authorization,
+
+                  Depth:
+                    '0'
+                },
+
+                responseType:
+                  'text',
+
+                validateStatus:
+                  () => true
+              })
+
+            if (
+              result.status !==
+                207 &&
+              !ok(
+                result.status
+              )
+            ) {
+              return -1
+            }
+
+            const body =
+              String(
+                result.data ||
+                ''
+              )
+
+            const match =
+              body.match(
+                /getcontentlength[^>]*>(\\d+)</i
+              )
+
+            return match
+              ? Number(
+                  match[1]
+                )
+              : -1
+          }
+
+          async function uploadBuffer(
+            config: IWebdavConfig,
+            segments: string[],
+            data: Buffer
+          ) {
+            const response =
+              await axios.put(
+                remoteUrl(
+                  config.url,
+                  segments
+                ),
+
+                data,
+
+                {
+                  headers: {
+                    Authorization:
+                      authHeader(
+                        config.username,
+                        config.password
+                      ),
+
+                    'Content-Type':
+                      'application/octet-stream',
+
+                    'Content-Length':
+                      data.length
+                  },
+
+                  maxBodyLength:
+                    Infinity,
+
+                  maxContentLength:
+                    Infinity,
+
+                  validateStatus:
+                    () => true
+                }
+              )
+
+            if (
+              !ok(
+                response.status
+              )
+            ) {
+              throw new Error(
+                `上传失败 HTTP ${response.status}`
+              )
+            }
+          }
+
+          async function uploadFile(
+            config: IWebdavConfig,
+            localPath: string,
+            segments: string[]
+          ) {
+            const stat =
+              await fs.promises
+                .stat(
+                  localPath
+                )
+
+            if (
+              !stat.isFile()
+            ) {
+              throw new Error(
+                '录像文件无效'
+              )
+            }
+
+            const response =
+              await axios.put(
+                remoteUrl(
+                  config.url,
+                  segments
+                ),
+
+                fs.createReadStream(
+                  localPath
+                ),
+
+                {
+                  headers: {
+                    Authorization:
+                      authHeader(
+                        config.username,
+                        config.password
+                      ),
+
+                    'Content-Type':
+                      'application/octet-stream',
+
+                    'Content-Length':
+                      stat.size
+                  },
+
+                  maxBodyLength:
+                    Infinity,
+
+                  maxContentLength:
+                    Infinity,
+
+                  validateStatus:
+                    () => true
+                }
+              )
+
+            if (
+              !ok(
+                response.status
+              )
+            ) {
+              throw new Error(
+                `上传失败 HTTP ${response.status}`
+              )
+            }
+
+            const size =
+              await remoteSize(
+                config,
+                segments
+              )
+
+            if (
+              size !==
+              stat.size
+            ) {
+              throw new Error(
+                `云端校验失败 本地 ${stat.size} 云端 ${size}`
+              )
+            }
+          }
+
+          export async function testWebdav(
+            config: IWebdavConfig
+          ) {
+            try {
+              if (
+                !config.url?.trim() ||
+                !config.username?.trim() ||
+                !config.password
+              ) {
+                return {
+                  success:
+                    false,
+
+                  message:
+                    '请填写 WebDAV 地址、用户名和密码'
+                }
+              }
+
+              const root =
+                pathParts(
+                  config.remoteRoot
+                )
+
+              await ensureFolder(
+                config,
+                root
+              )
+
+              const filename =
+                `.fideo-test-${Date.now()}.txt`
+
+              const parts = [
+                ...root,
+                filename
+              ]
+
+              const data =
+                Buffer.from(
+                  'Fideo WebDAV Test'
+                )
+
+              await uploadBuffer(
+                config,
+                parts,
+                data
+              )
+
+              const size =
+                await remoteSize(
+                  config,
+                  parts
+                )
+
+              if (
+                size !==
+                data.length
+              ) {
+                throw new Error(
+                  '测试文件大小校验失败'
+                )
+              }
+
+              const deleteResult =
+                await axios.delete(
+                  remoteUrl(
+                    config.url,
+                    parts
+                  ),
+
+                  {
+                    headers: {
+                      Authorization:
+                        authHeader(
+                          config.username,
+                          config.password
+                        )
+                    },
+
+                    validateStatus:
+                      () => true
+                  }
+                )
+
+              if (
+                !ok(
+                  deleteResult.status
+                ) &&
+                deleteResult.status !==
+                  404
+              ) {
+                throw new Error(
+                  `测试文件删除失败 HTTP ${deleteResult.status}`
+                )
+              }
+
+              return {
+                success:
+                  true,
+
+                message:
+                  'WebDAV 上传测试成功'
+              }
+            } catch (
+              error
+            ) {
+              return {
+                success:
+                  false,
+
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : String(
+                        error
+                      )
+              }
+            }
+          }
+
+          export async function uploadWebdav(
+            request:
+              IWebdavUploadRequest
+          ) {
+            const config:
+              IWebdavConfig = {
+              url:
+                request.url,
+
+              username:
+                request.username,
+
+              password:
+                request.password,
+
+              remoteRoot:
+                request.remoteRoot
+            }
+
+            const folder = [
+              ...pathParts(
+                request.remoteRoot
+              ),
+
+              safeFolderName(
+                request.streamerName
+              )
+            ]
+
+            await ensureFolder(
+              config,
+              folder
+            )
+
+            const retries =
+              Math.max(
+                1,
+                Math.min(
+                  10,
+                  Number(
+                    request.retryTimes ||
+                    3
+                  )
+                )
+              )
+
+            const results = []
+
+            for (
+              const file of
+              request.files
+            ) {
+              let uploaded =
+                false
+
+              let lastError =
+                ''
+
+              for (
+                let attempt = 1;
+                attempt <= retries;
+                attempt += 1
+              ) {
+                try {
+                  const ext =
+                    path.extname(
+                      file.path
+                    )
+
+                  const cloudName =
+                    path.extname(
+                      file.cloudName
+                    )
+                      ? file.cloudName
+                      : `${file.cloudName}${ext}`
+
+                  await uploadFile(
+                    config,
+                    file.path,
+                    [
+                      ...folder,
+                      cloudName
+                    ]
+                  )
+
+                  let deleted =
+                    false
+
+                  if (
+                    request
+                      .deleteAfterUpload
+                  ) {
+                    await fs.promises
+                      .unlink(
+                        file.path
+                      )
+
+                    deleted =
+                      true
+                  }
+
+                  results.push({
+                    path:
+                      file.path,
+
+                    cloudName,
+
+                    success:
+                      true,
+
+                    deleted
+                  })
+
+                  uploaded =
+                    true
+
+                  break
+                } catch (
+                  error
+                ) {
+                  lastError =
+                    error instanceof Error
+                      ? error.message
+                      : String(
+                          error
+                        )
+
+                  if (
+                    attempt <
+                    retries
+                  ) {
+                    await new Promise(
+                      resolve =>
+                        setTimeout(
+                          resolve,
+                          attempt *
+                            2000
+                        )
+                    )
+                  }
+                }
+              }
+
+              if (
+                !uploaded
+              ) {
+                results.push({
+                  path:
+                    file.path,
+
+                  cloudName:
+                    file.cloudName,
+
+                  success:
+                    false,
+
+                  deleted:
+                    false,
+
+                  message:
+                    lastError
+                })
+              }
+            }
+
+            return {
+              success:
+                results.length >
+                  0 &&
+                results.every(
+                  item =>
+                    item.success
+                ),
+
+              results
+            }
+          }
+          """
+          )
+
+          webdav_path = Path(
+              "src/main/webdav.ts"
+          )
+
+          lines = webdav_path.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          webdav_path.write_text(
+              "\n".join(
+                  line[10:]
+                  if line.startswith(
+                      "          "
+                  )
+                  else line
+                  for line in lines
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          # ============================================================
+          # 3. Constants
+          # ============================================================
+
+          const_path = (
+              "src/const.ts"
+          )
+
+          const_text =
+              read(
+                const_path
+              )
+
+          if (
+              "TEST_WEBDAV"
+              not in
+              const_text
+          ):
+              const_text += (
+                  "\n"
+                  "export const TEST_WEBDAV = 'TEST_WEBDAV'\n"
+                  "export const UPLOAD_WEBDAV = 'UPLOAD_WEBDAV'\n"
+              )
+
+              write(
+                  const_path,
+                  const_text
+              )
+
+          # ============================================================
+          # 4. Default settings store
+          # ============================================================
+
+          write(
+              "src/renderer/src/store/useDefaultSettingsStore.ts",
+              """import { create } from 'zustand'
+          import localForage from 'localforage'
+
+          interface IDefaultSettingsStore {
+            defaultSettingsConfig: IDefaultDefaultSettingsConfig
+            setDefaultSettingsConfig: (
+              config: IDefaultDefaultSettingsConfig
+            ) => void
+            initData: () => void
+          }
+
+          const DEFAULT_SETTINGS:
+            IDefaultDefaultSettingsConfig = {
+            directory: '',
+            lang: 'cn',
+            xizhiKey: '',
+
+            webdavEnabled:
+              false,
+
+            webdavUrl:
+              'https://pan.lansod.cn/dav',
+
+            webdavUsername:
+              '',
+
+            webdavPassword:
+              '',
+
+            webdavRemoteRoot:
+              '/',
+
+            webdavDeleteAfterUpload:
+              false,
+
+            webdavRetryTimes:
+              3
+          }
+
+          export const useDefaultSettingsStore =
+            create<IDefaultSettingsStore>(
+              set => ({
+                defaultSettingsConfig:
+                  DEFAULT_SETTINGS,
+
+                initData:
+                  async () => {
+                    const saved =
+                      await localForage
+                        .getItem<IDefaultDefaultSettingsConfig>(
+                          'defaultSettingsConfig'
+                        )
+
+                    set(() => ({
+                      defaultSettingsConfig: {
+                        ...DEFAULT_SETTINGS,
+                        ...(saved || {})
+                      }
+                    }))
+                  },
+
+                setDefaultSettingsConfig:
+                  config =>
+                    set(() => {
+                      const next = {
+                        ...DEFAULT_SETTINGS,
+                        ...config
+                      }
+
+                      void localForage
+                        .setItem(
+                          'defaultSettingsConfig',
+                          next
+                        )
+
+                      return {
+                        defaultSettingsConfig:
+                          next
+                      }
+                    })
+              })
+            )
+          """
+          )
+
+          store_path = Path(
+              "src/renderer/src/store/useDefaultSettingsStore.ts"
+          )
+
+          lines = store_path.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          store_path.write_text(
+              "\n".join(
+                  line[10:]
+                  if line.startswith(
+                      "          "
+                  )
+                  else line
+                  for line in lines
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          # ============================================================
+          # 5. Cloud UI
+          # ============================================================
+
+          write(
+              "src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx",
+              """import { useState } from 'react'
+
+          import { Button } from '@/shadcn/ui/button'
+          import { FormLabel } from '@/shadcn/ui/form'
+          import { Input } from '@/shadcn/ui/input'
+          import { Switch } from '@/shadcn/ui/switch'
+          import { useToast } from '@renderer/hooks/useToast'
+
+          interface Props {
+            form: any
+          }
+
+          export default function CloudStorageSettings({
+            form
+          }: Props) {
+            const {
+              toast
+            } = useToast()
+
+            const [
+              testing,
+              setTesting
+            ] = useState(false)
+
+            const enabled =
+              Boolean(
+                form.watch(
+                  'webdavEnabled'
+                )
+              )
+
+            const deleteAfterUpload =
+              Boolean(
+                form.watch(
+                  'webdavDeleteAfterUpload'
+                )
+              )
+
+            const handleTest =
+              async () => {
+                const url =
+                  String(
+                    form.getValues(
+                      'webdavUrl'
+                    ) ||
+                    ''
+                  ).trim()
+
+                const username =
+                  String(
+                    form.getValues(
+                      'webdavUsername'
+                    ) ||
+                    ''
+                  ).trim()
+
+                const password =
+                  String(
+                    form.getValues(
+                      'webdavPassword'
+                    ) ||
+                    ''
+                  )
+
+                const remoteRoot =
+                  String(
+                    form.getValues(
+                      'webdavRemoteRoot'
+                    ) ||
+                    '/'
+                  ).trim() ||
+                  '/'
+
+                if (
+                  !url ||
+                  !username ||
+                  !password
+                ) {
+                  toast({
+                    title:
+                      'WebDAV 测试失败',
+
+                    description:
+                      '请先填写 WebDAV 地址、用户名和密码',
+
+                    variant:
+                      'destructive'
+                  })
+
+                  return
+                }
+
+                setTesting(
+                  true
+                )
+
+                try {
+                  const result =
+                    await window.api
+                      .testWebdav({
+                        url,
+                        username,
+                        password,
+                        remoteRoot
+                      })
+
+                  toast({
+                    title:
+                      result.success
+                        ? 'WebDAV 测试成功'
+                        : 'WebDAV 测试失败',
+
+                    description:
+                      result.message,
+
+                    variant:
+                      result.success
+                        ? undefined
+                        : 'destructive'
+                  })
+                } finally {
+                  setTesting(
+                    false
+                  )
+                }
+              }
+
+            return (
+              <div className="space-y-4 rounded-lg border p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <FormLabel>
+                      云端存储 / 自动上传
+                    </FormLabel>
+
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      按主播名称自动创建文件夹
+                    </div>
+                  </div>
+
+                  <Switch
+                    checked={
+                      enabled
+                    }
+                    onCheckedChange={(
+                      value
+                    ) =>
+                      form.setValue(
+                        'webdavEnabled',
+                        value
+                      )
+                    }
+                  />
+                </div>
+
+                {enabled && (
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <FormLabel>
+                        WebDAV 地址
+                      </FormLabel>
+
+                      <Input
+                        value={String(
+                          form.watch(
+                            'webdavUrl'
+                          ) ||
+                          ''
+                        )}
+                        onChange={(
+                          event
+                        ) =>
+                          form.setValue(
+                            'webdavUrl',
+                            event.target
+                              .value
+                          )
+                        }
+                        placeholder="https://pan.lansod.cn/dav"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <FormLabel>
+                        用户名
+                      </FormLabel>
+
+                      <Input
+                        value={String(
+                          form.watch(
+                            'webdavUsername'
+                          ) ||
+                          ''
+                        )}
+                        onChange={(
+                          event
+                        ) =>
+                          form.setValue(
+                            'webdavUsername',
+                            event.target
+                              .value
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <FormLabel>
+                        密码
+                      </FormLabel>
+
+                      <Input
+                        type="password"
+                        value={String(
+                          form.watch(
+                            'webdavPassword'
+                          ) ||
+                          ''
+                        )}
+                        onChange={(
+                          event
+                        ) =>
+                          form.setValue(
+                            'webdavPassword',
+                            event.target
+                              .value
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <FormLabel>
+                        上传根目录
+                      </FormLabel>
+
+                      <Input
+                        value={String(
+                          form.watch(
+                            'webdavRemoteRoot'
+                          ) ||
+                          '/'
+                        )}
+                        onChange={(
+                          event
+                        ) =>
+                          form.setValue(
+                            'webdavRemoteRoot',
+                            event.target
+                              .value
+                          )
+                        }
+                        placeholder="/"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <FormLabel>
+                          上传成功后删除本地录像
+                        </FormLabel>
+
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          云端文件大小确认一致后才删除
+                        </div>
+                      </div>
+
+                      <Switch
+                        checked={
+                          deleteAfterUpload
+                        }
+                        onCheckedChange={(
+                          value
+                        ) =>
+                          form.setValue(
+                            'webdavDeleteAfterUpload',
+                            value
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <FormLabel>
+                        失败重试次数
+                      </FormLabel>
+
+                      <Input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={Number(
+                          form.watch(
+                            'webdavRetryTimes'
+                          ) ||
+                          3
+                        )}
+                        onChange={(
+                          event
+                        ) =>
+                          form.setValue(
+                            'webdavRetryTimes',
+                            Math.max(
+                              1,
+                              Math.min(
+                                10,
+                                Number(
+                                  event.target
+                                    .value
+                                ) ||
+                                  3
+                              )
+                            )
+                          )
+                        }
+                      />
+                    </div>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={
+                        testing
+                      }
+                      onClick={
+                        handleTest
+                      }
+                    >
+                      {testing
+                        ? '测试中...'
+                        : '测试上传'}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )
+          }
+          """
+          )
+
+          cloud_path = Path(
+              "src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx"
+          )
+
+          lines = cloud_path.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          cloud_path.write_text(
+              "\n".join(
+                  line[10:]
+                  if line.startswith(
+                      "          "
+                  )
+                  else line
+                  for line in lines
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          # ============================================================
+          # 6. Default settings page
+          # ============================================================
+
+          settings_file = (
+              "src/renderer/src/components/NavBar/components/"
+              "DefaultSettingSheet.tsx"
+          )
+
+          settings = read(
+              settings_file
+          )
+
+          if (
+              "CloudStorageSettings"
+              not in
+              settings
+          ):
+              settings = settings.replace(
+                  "import { testXizhiPushNotification } from '@renderer/lib/utils'",
+                  "import { testXizhiPushNotification } from '@renderer/lib/utils'\n"
+                  "import CloudStorageSettings from './CloudStorageSettings'"
+              )
+
+          if (
+              "webdavEnabled"
+              not in
+              settings
+          ):
+              settings = settings.replace(
+                  "  logsDir: z.optional(z.string())\n})",
+                  """  logsDir: z.optional(z.string()),
+            webdavEnabled: z.optional(z.boolean()),
+            webdavUrl: z.optional(z.string()),
+            webdavUsername: z.optional(z.string()),
+            webdavPassword: z.optional(z.string()),
+            webdavRemoteRoot: z.optional(z.string()),
+            webdavDeleteAfterUpload: z.optional(z.boolean()),
+            webdavRetryTimes: z.optional(z.number())
+          })"""
+              )
+
+          if (
+              "<CloudStorageSettings"
+              not in
+              settings
+          ):
+              settings = settings.replace(
+                  """                <FormField
+                    control={form.control}
+                    name="logsDir\"""",
+                  """                <CloudStorageSettings form={form} />
+
+                          <FormField
+                    control={form.control}
+                    name="logsDir\""""
+              )
+
+          write(
+              settings_file,
+              settings
+          )
+
+          # ============================================================
+          # 7. Xizhi: always push
+          # ============================================================
+
+          utils_file = (
+              "src/renderer/src/lib/utils.ts"
+          )
+
+          utils = read(
+              utils_file
+          )
+
+          regex_replace_required(
+              utils_file,
+
+              r"""export function useXizhiToPushNotification\(
+          options: \{
+            key: string
+            title: string
+            content\?: string
+          \}
+          \) \{.*?\n\}""",
+
+              """export function useXizhiToPushNotification(options: {
+            key: string
+            title: string
+            content?: string
+          }) {
+            const key =
+              options.key.trim()
+
+            if (!key) {
+              return
+            }
+
+            const titleAndContent =
+              options.content
+                ? `${options.title} - ${options.content}`
+                : options.title
+
+            const separator =
+              key.includes('?')
+                ? '&'
+                : '?'
+
+            void fetch(
+              `${key}${separator}title=${encodeURIComponent(
+                titleAndContent
+              )}`
+            ).catch(
+              () => undefined
+            )
+          }"""
+          )
+
+          # ============================================================
+          # 8. Preload IPC
+          # ============================================================
+
+          preload_file = (
+              "src/preload/index.ts"
+          )
+
+          preload = read(
+              preload_file
+          )
+
+          preload = preload.replace(
+              "  DOUYIN_LOGIN_STATUS\n} from '../const'",
+              "  DOUYIN_LOGIN_STATUS,\n"
+              "  TEST_WEBDAV,\n"
+              "  UPLOAD_WEBDAV\n"
+              "} from '../const'"
+          )
+
+          if (
+              "testWebdav:"
+              not in
+              preload
+          ):
+              preload = preload.replace(
+                  "  startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),",
+                  """  testWebdav: (config: {
+              url: string
+              username: string
+              password: string
+              remoteRoot?: string
+            }) =>
+              ipcRenderer.invoke(
+                TEST_WEBDAV,
+                config
+              ),
+
+            uploadWebdav: (request: {
+              url: string
+              username: string
+              password: string
+              remoteRoot?: string
+              streamerName: string
+              files: IRecordedFile[]
+              deleteAfterUpload?: boolean
+              retryTimes?: number
+            }) =>
+              ipcRenderer.invoke(
+                UPLOAD_WEBDAV,
+                request
+              ),
+
+            startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),"""
+              )
+
+          preload = re.sub(
+              r"""onStreamRecordEnd:\s*\(callback: \(title: string, code: number, errMsg\?: string\) => void\) => \{
+          \s*ipcRenderer\.on\(STREAM_RECORD_END, \(_, title, code, errMsg\) => \{
+          \s*callback\(title, code, errMsg\)
+          \s*\}\)
+          \s*\},""",
+
+              """onStreamRecordEnd: (
+              callback: (
+                title: string,
+                code: number,
+                errMsg?: string,
+                files?: IRecordedFile[]
+              ) => void
+            ) => {
+              ipcRenderer.on(
+                STREAM_RECORD_END,
+                (
+                  _,
+                  title,
+                  code,
+                  errMsg,
+                  files
+                ) => {
+                  callback(
+                    title,
+                    code,
+                    errMsg,
+                    files
+                  )
+                }
+              )
+            },""",
+
+              preload,
+              count=1,
+              flags=re.S
+          )
+
+          write(
+              preload_file,
+              preload
+          )
+
+          # ============================================================
+          # 9. Preload declaration
+          # ============================================================
+
+          preload_dts_file = (
+              "src/preload/index.d.ts"
+          )
+
+          preload_dts = read(
+              preload_dts_file
+          )
+
+          if (
+              "testWebdav:"
+              not in
+              preload_dts
+          ):
+              preload_dts = preload_dts.replace(
+                  """      startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>""",
+                  """      testWebdav: (config: {
                 url: string
                 username: string
                 password: string
                 remoteRoot?: string
-              }
+              }) => Promise<{
+                success: boolean
+                message: string
+              }>
 
-              export interface IWebdavFile {
-                path: string
-                cloudName: string
-              }
-
-              export interface IWebdavUploadRequest
-                extends IWebdavConfig {
+              uploadWebdav: (request: {
+                url: string
+                username: string
+                password: string
+                remoteRoot?: string
                 streamerName: string
-                files: IWebdavFile[]
+                files: IRecordedFile[]
                 deleteAfterUpload?: boolean
                 retryTimes?: number
-              }
-
-              const normalizeBaseUrl = (
-                value: string
-              ) =>
-                value
-                  .trim()
-                  .replace(/\/+$/, '')
-
-              const getAuthorization = (
-                username: string,
-                password: string
-              ) =>
-                `Basic ${Buffer.from(
-                  `${username}:${password}`,
-                  'utf8'
-                ).toString('base64')}`
-
-              const splitRemotePath = (
-                value?: string
-              ) =>
-                (value || '/')
-                  .split('/')
-                  .map(
-                    (item) =>
-                      item.trim()
-                  )
-                  .filter(Boolean)
-
-              const sanitizeFolderName = (
-                value: string
-              ) => {
-                const result = String(
-                  value || ''
-                )
-                  .replace(
-                    /[<>:"/\\|?*\u0000-\u001f]/g,
-                    '_'
-                  )
-                  .replace(
-                    /[. ]+$/g,
-                    ''
-                  )
-                  .trim()
-
-                return (
-                  result ||
-                  '主播'
-                )
-              }
-
-              const buildRemoteUrl = (
-                baseUrl: string,
-                segments: string[]
-              ) => {
-                const base =
-                  normalizeBaseUrl(
-                    baseUrl
-                  )
-
-                if (
-                  segments.length === 0
-                ) {
-                  return `${base}/`
-                }
-
-                return (
-                  `${base}/` +
-                  segments
-                    .map(
-                      (segment) =>
-                        encodeURIComponent(
-                          segment
-                        )
-                    )
-                    .join('/')
-                )
-              }
-
-              const isSuccessStatus = (
-                status: number
-              ) =>
-                status >= 200 &&
-                status < 300
-
-              async function ensureDirectory(
-                config: IWebdavConfig,
-                segments: string[]
-              ) {
-                const current: string[] =
-                  []
-
-                for (
-                  const segment of
-                  segments
-                ) {
-                  current.push(
-                    segment
-                  )
-
-                  const response =
-                    await axios.request({
-                      method: 'MKCOL',
-
-                      url:
-                        buildRemoteUrl(
-                          config.url,
-                          current
-                        ),
-
-                      headers: {
-                        Authorization:
-                          getAuthorization(
-                            config.username,
-                            config.password
-                          )
-                      },
-
-                      validateStatus:
-                        () => true
-                    })
-
-                  if (
-                    ![
-                      200,
-                      201,
-                      204,
-                      301,
-                      405
-                    ].includes(
-                      response.status
-                    )
-                  ) {
-                    throw new Error(
-                      `创建云端目录失败，HTTP ${response.status}`
-                    )
-                  }
-                }
-              }
-
-              async function getRemoteSize(
-                config: IWebdavConfig,
-                segments: string[]
-              ): Promise<number> {
-                const url =
-                  buildRemoteUrl(
-                    config.url,
-                    segments
-                  )
-
-                const authorization =
-                  getAuthorization(
-                    config.username,
-                    config.password
-                  )
-
-                const head =
-                  await axios.head(
-                    url,
-                    {
-                      headers: {
-                        Authorization:
-                          authorization
-                      },
-
-                      validateStatus:
-                        () => true
-                    }
-                  )
-
-                if (
-                  isSuccessStatus(
-                    head.status
-                  )
-                ) {
-                  const value =
-                    head.headers[
-                      'content-length'
-                    ]
-
-                  const size =
-                    Number(value)
-
-                  if (
-                    Number.isFinite(
-                      size
-                    ) &&
-                    size >= 0
-                  ) {
-                    return size
-                  }
-                }
-
-                const propfind =
-                  await axios.request({
-                    method:
-                      'PROPFIND',
-
-                    url,
-
-                    headers: {
-                      Authorization:
-                        authorization,
-
-                      Depth:
-                        '0'
-                    },
-
-                    responseType:
-                      'text',
-
-                    validateStatus:
-                      () => true
-                  })
-
-                if (
-                  propfind.status !==
-                    207 &&
-                  !isSuccessStatus(
-                    propfind.status
-                  )
-                ) {
-                  return -1
-                }
-
-                const body =
-                  String(
-                    propfind.data ||
-                    ''
-                  )
-
-                const match =
-                  body.match(
-                    /<[^>]*getcontentlength[^>]*>(\d+)<\/[^>]*getcontentlength>/i
-                  )
-
-                return match
-                  ? Number(
-                      match[1]
-                    )
-                  : -1
-              }
-
-              async function putBuffer(
-                config: IWebdavConfig,
-                segments: string[],
-                data: Buffer
-              ) {
-                const response =
-                  await axios.put(
-                    buildRemoteUrl(
-                      config.url,
-                      segments
-                    ),
-
-                    data,
-
-                    {
-                      headers: {
-                        Authorization:
-                          getAuthorization(
-                            config.username,
-                            config.password
-                          ),
-
-                        'Content-Type':
-                          'application/octet-stream',
-
-                        'Content-Length':
-                          data.length
-                      },
-
-                      maxBodyLength:
-                        Infinity,
-
-                      maxContentLength:
-                        Infinity,
-
-                      validateStatus:
-                        () => true
-                    }
-                  )
-
-                if (
-                  !isSuccessStatus(
-                    response.status
-                  )
-                ) {
-                  throw new Error(
-                    `上传失败，HTTP ${response.status}`
-                  )
-                }
-              }
-
-              async function putFile(
-                config: IWebdavConfig,
-                localPath: string,
-                segments: string[]
-              ) {
-                const stat =
-                  await fs.promises.stat(
-                    localPath
-                  )
-
-                if (
-                  !stat.isFile()
-                ) {
-                  throw new Error(
-                    `录像文件不存在：${localPath}`
-                  )
-                }
-
-                const response =
-                  await axios.put(
-                    buildRemoteUrl(
-                      config.url,
-                      segments
-                    ),
-
-                    fs.createReadStream(
-                      localPath
-                    ),
-
-                    {
-                      headers: {
-                        Authorization:
-                          getAuthorization(
-                            config.username,
-                            config.password
-                          ),
-
-                        'Content-Type':
-                          'application/octet-stream',
-
-                        'Content-Length':
-                          stat.size
-                      },
-
-                      maxBodyLength:
-                        Infinity,
-
-                      maxContentLength:
-                        Infinity,
-
-                      validateStatus:
-                        () => true
-                    }
-                  )
-
-                if (
-                  !isSuccessStatus(
-                    response.status
-                  )
-                ) {
-                  throw new Error(
-                    `上传失败，HTTP ${response.status}`
-                  )
-                }
-
-                const remoteSize =
-                  await getRemoteSize(
-                    config,
-                    segments
-                  )
-
-                if (
-                  remoteSize !==
-                  stat.size
-                ) {
-                  throw new Error(
-                    `云端文件校验失败，本地 ${stat.size} 字节，云端 ${remoteSize} 字节`
-                  )
-                }
-              }
-
-              export async function testWebdav(
-                config: IWebdavConfig
-              ) {
-                try {
-                  if (
-                    !config.url?.trim() ||
-                    !config.username
-                      ?.trim() ||
-                    !config.password
-                  ) {
-                    return {
-                      success: false,
-                      message:
-                        'WebDAV 地址、用户名和密码不能为空'
-                    }
-                  }
-
-                  const rootSegments =
-                    splitRemotePath(
-                      config.remoteRoot
-                    )
-
-                  await ensureDirectory(
-                    config,
-                    rootSegments
-                  )
-
-                  const fileName =
-                    `.fideo-test-${Date.now()}.txt`
-
-                  const remoteSegments =
-                    [
-                      ...rootSegments,
-                      fileName
-                    ]
-
-                  const data =
-                    Buffer.from(
-                      'Fideo WebDAV Test',
-                      'utf8'
-                    )
-
-                  await putBuffer(
-                    config,
-                    remoteSegments,
-                    data
-                  )
-
-                  const remoteSize =
-                    await getRemoteSize(
-                      config,
-                      remoteSegments
-                    )
-
-                  if (
-                    remoteSize !==
-                    data.length
-                  ) {
-                    throw new Error(
-                      `测试文件大小校验失败，云端 ${remoteSize} 字节`
-                    )
-                  }
-
-                  const deleteResponse =
-                    await axios.delete(
-                      buildRemoteUrl(
-                        config.url,
-                        remoteSegments
-                      ),
-
-                      {
-                        headers: {
-                          Authorization:
-                            getAuthorization(
-                              config.username,
-                              config.password
-                            )
-                        },
-
-                        validateStatus:
-                          () => true
-                      }
-                    )
-
-                  if (
-                    !isSuccessStatus(
-                      deleteResponse.status
-                    ) &&
-                    deleteResponse.status !==
-                      404
-                  ) {
-                    throw new Error(
-                      `测试文件删除失败，HTTP ${deleteResponse.status}`
-                    )
-                  }
-
-                  return {
-                    success: true,
-                    message:
-                      '连接、创建、上传、校验和删除测试均正常'
-                  }
-                } catch (
-                  error
-                ) {
-                  return {
-                    success: false,
-
-                    message:
-                      error instanceof
-                        Error
-                        ? error.message
-                        : String(
-                            error
-                          )
-                  }
-                }
-              }
-
-              export async function uploadWebdav(
-                request:
-                  IWebdavUploadRequest
-              ) {
-                const config:
-                  IWebdavConfig = {
-                  url:
-                    request.url,
-
-                  username:
-                    request.username,
-
-                  password:
-                    request.password,
-
-                  remoteRoot:
-                    request.remoteRoot
-                }
-
-                const rootSegments =
-                  splitRemotePath(
-                    request.remoteRoot
-                  )
-
-                const streamerFolder =
-                  sanitizeFolderName(
-                    request.streamerName
-                  )
-
-                const directorySegments =
-                  [
-                    ...rootSegments,
-                    streamerFolder
-                  ]
-
-                await ensureDirectory(
-                  config,
-                  directorySegments
-                )
-
-                const retryTimes =
-                  Math.max(
-                    1,
-                    Math.min(
-                      10,
-                      Number(
-                        request.retryTimes ||
-                        3
-                      )
-                    )
-                  )
-
-                const results:
-                  Array<{
-                    path: string
-                    cloudName: string
-                    success: boolean
-                    deleted: boolean
-                    message?: string
-                  }> = []
-
-                for (
-                  const file of
-                  request.files
-                ) {
-                  let success = false
-                  let lastError = ''
-
-                  for (
-                    let attempt = 1;
-                    attempt <=
-                    retryTimes;
-                    attempt += 1
-                  ) {
-                    try {
-                      if (
-                        !file.path
-                      ) {
-                        throw new Error(
-                          '本地录像路径为空'
-                        )
-                      }
-
-                      const extension =
-                        path.extname(
-                          file.path
-                        )
-
-                      const cloudName =
-                        path.extname(
-                          file.cloudName
-                        )
-                          ? file.cloudName
-                          : `${file.cloudName}${extension}`
-
-                      await putFile(
-                        config,
-                        file.path,
-                        [
-                          ...directorySegments,
-                          cloudName
-                        ]
-                      )
-
-                      let deleted =
-                        false
-
-                      if (
-                        request
-                          .deleteAfterUpload
-                      ) {
-                        await fs.promises.unlink(
-                          file.path
-                        )
-
-                        deleted = true
-                      }
-
-                      results.push({
-                        path:
-                          file.path,
-
-                        cloudName,
-
-                        success:
-                          true,
-
-                        deleted
-                      })
-
-                      success = true
-                      break
-                    } catch (
-                      error
-                    ) {
-                      lastError =
-                        error instanceof
-                          Error
-                          ? error.message
-                          : String(
-                              error
-                            )
-
-                      if (
-                        attempt <
-                        retryTimes
-                      ) {
-                        await new Promise(
-                          (
-                            resolve
-                          ) =>
-                            setTimeout(
-                              resolve,
-                              attempt *
-                                2000
-                            )
-                        )
-                      }
-                    }
-                  }
-
-                  if (
-                    !success
-                  ) {
-                    results.push({
-                      path:
-                        file.path,
-
-                      cloudName:
-                        file.cloudName,
-
-                      success:
-                        false,
-
-                      deleted:
-                        false,
-
-                      message:
-                        lastError
-                    })
-                  }
-                }
-
-                return {
-                  success:
-                    results.length >
-                      0 &&
-                    results.every(
-                      (item) =>
-                        item.success
-                    ),
-
-                  results
-                }
-              }
-              """
+              }) => Promise<{
+                success: boolean
+                results: Array<{
+                  path: string
+                  cloudName: string
+                  success: boolean
+                  deleted: boolean
+                  message?: string
+                }>
+              }>
+
+              startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>"""
+              )
+
+          preload_dts = preload_dts.replace(
+              """      onStreamRecordEnd: (callback: (id: string, code: number, errMsg?: string) => void) => void""",
+              """      onStreamRecordEnd: (
+                callback: (
+                  id: string,
+                  code: number,
+                  errMsg?: string,
+                  files?: IRecordedFile[]
+                ) => void
+              ) => void"""
           )
 
+          write(
+              preload_dts_file,
+              preload_dts
+          )
 
           # ============================================================
-          # Constants
+          # 10. Main process IPC
           # ============================================================
 
-          const_path = "src/const.ts"
-          const_text = read_file(
-              const_path
+          main_file = (
+              "src/main/index.ts"
+          )
+
+          main = read(
+              main_file
+          )
+
+          main = main.replace(
+              "  DOUYIN_LOGIN_STATUS\n} from '../const'",
+              "  DOUYIN_LOGIN_STATUS,\n"
+              "  TEST_WEBDAV,\n"
+              "  UPLOAD_WEBDAV\n"
+              "} from '../const'"
           )
 
           if (
-              "TEST_WEBDAV" not in
-              const_text
+              "from './webdav'"
+              not in
+              main
           ):
-              const_text += dedent(
-                  """
-
-                  export const TEST_WEBDAV = 'TEST_WEBDAV'
-                  export const UPLOAD_WEBDAV = 'UPLOAD_WEBDAV'
-                  """
+              main = main.replace(
+                  "} from './douyin-session'",
+                  "} from './douyin-session'\n\n"
+                  "import {\n"
+                  "  testWebdav,\n"
+                  "  uploadWebdav\n"
+                  "} from './webdav'"
               )
 
-              Path(
-                  const_path
-              ).write_text(
-                  const_text,
-                  encoding="utf-8"
+          if (
+              "ipcMain.handle(\n    TEST_WEBDAV"
+              not in
+              main
+          ):
+              main = main.replace(
+                  """  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
+            shell.openExternal(url)
+          })""",
+                  """  ipcMain.handle(
+            TEST_WEBDAV,
+            async (_, config) => {
+              return await testWebdav(
+                config
+              )
+            }
+          )
+
+          ipcMain.handle(
+            UPLOAD_WEBDAV,
+            async (_, request) => {
+              return await uploadWebdav(
+                request
+              )
+            }
+          )
+
+          ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
+            shell.openExternal(url)
+          })"""
               )
 
-
-          # ============================================================
-          # Global types
-          # ============================================================
-
-          replace_once(
-              "type.d.ts",
-              """
-              interface IStreamConfig {
-                id: string
-                title: string
-                roomUrl: string
-                filename: string
-                directory: string
-                proxy?: string
-                cookie?: string
-                interval: number
-                liveUrls?: string[]
-                segmentTime?: string | ''
-                line: string // '0' '1' eg
-                status: number
-                convertToMP4: boolean
-                detectResolution: boolean
-                autoRecord: boolean
-              }
-              """,
-              """
-              interface IRecordedFile {
-                path: string
-                cloudName: string
-              }
-
-              type CloudUploadStatus =
-                | 'uploading'
-                | 'success'
-                | 'error'
-
-              interface IStreamConfig {
-                id: string
-                title: string
-                roomUrl: string
-                filename: string
-                directory: string
-                proxy?: string
-                cookie?: string
-                interval: number
-                liveUrls?: string[]
-                segmentTime?: string | ''
-                line: string // '0' '1' eg
-                status: number
-                convertToMP4: boolean
-                detectResolution: boolean
-                autoRecord: boolean
-                cloudUploadStatus?: CloudUploadStatus
-              }
-              """
+          main = main.replace(
+              """      (code: number, errMsg?: string) => {
+                win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)""",
+              """      (
+                code: number,
+                errMsg?: string,
+                files?: IRecordedFile[]
+              ) => {
+                win?.webContents.send(
+                  STREAM_RECORD_END,
+                  id,
+                  code,
+                  errMsg,
+                  files
+                )"""
           )
 
-          replace_once(
-              "type.d.ts",
-              """
-              interface IDefaultDefaultSettingsConfig {
-                directory: string
-                lang: Lang
-                xizhiKey?: string
-              }
-              """,
-              """
-              interface IDefaultDefaultSettingsConfig {
-                directory: string
-                lang: Lang
-                xizhiKey?: string
-
-                webdavEnabled?: boolean
-                webdavUrl?: string
-                webdavUsername?: string
-                webdavPassword?: string
-                webdavRemoteRoot?: string
-                webdavDeleteAfterUpload?: boolean
-                webdavRetryTimes?: number
-              }
-              """
+          write(
+              main_file,
+              main
           )
 
-
           # ============================================================
-          # Default settings store
+          # 11. Recording final file metadata
           # ============================================================
 
-          write_file(
-              "src/renderer/src/store/useDefaultSettingsStore.ts",
-              """
-              import { create } from 'zustand'
-              import localForage from 'localforage'
+          record_file = (
+              "src/main/ffmpeg/record.ts"
+          )
 
-              interface IDefaultSettingsStore {
-                defaultSettingsConfig: IDefaultDefaultSettingsConfig
-                setDefaultSettingsConfig: (
-                  config: IDefaultDefaultSettingsConfig
-                ) => void
-                initData: () => void
-              }
+          record = read(
+              record_file
+          )
 
-              const DEFAULT_SETTINGS:
-                IDefaultDefaultSettingsConfig = {
-                directory: '',
-                lang: 'cn',
-                xizhiKey: '',
+          record = record.replace(
+              """  cb?: (code: number, errMsg?: string) => void
+          ) {""",
+              """  cb?: (
+            code: number,
+            errMsg?: string,
+            files?: IRecordedFile[]
+          ) => void
+          ) {"""
+          )
 
-                webdavEnabled:
-                  false,
+          record = record.replace(
+              """  const time = dayjs().format('YYYY.MM.DD-HH.mm.ss')
+            const baseOutput = path.resolve(directory, `${filename}-${time}`)""",
+              """  const now =
+            dayjs()
 
-                webdavUrl:
-                  'https://pan.lansod.cn/dav',
+          const time =
+            now.format(
+              'YYYY.MM.DD-HH.mm.ss'
+            )
 
-                webdavUsername:
-                  '',
+          const cloudTime =
+            now.format(
+              'YYYY-MM-DD_HH-mm-ss'
+            )
 
-                webdavPassword:
-                  '',
+          const baseOutput =
+            path.resolve(
+              directory,
+              `${filename}-${time}`
+            )"""
+          )
 
-                webdavRemoteRoot:
-                  '/',
-
-                webdavDeleteAfterUpload:
-                  false,
-
-                webdavRetryTimes:
-                  3
-              }
-
-              export const useDefaultSettingsStore =
-                create<IDefaultSettingsStore>(
-                  (set) => ({
-                    defaultSettingsConfig:
-                      DEFAULT_SETTINGS,
-
-                    initData:
-                      async () => {
-                        const stored =
-                          await localForage.getItem<IDefaultDefaultSettingsConfig>(
-                            'defaultSettingsConfig'
-                          )
-
-                        set(() => ({
-                          defaultSettingsConfig:
-                            {
-                              ...DEFAULT_SETTINGS,
-                              ...(stored ||
-                                {})
-                            }
-                        }))
-                      },
-
-                    setDefaultSettingsConfig:
-                      (
-                        config:
-                          IDefaultDefaultSettingsConfig
-                      ) =>
-                        set(() => {
-                          const next = {
-                            ...DEFAULT_SETTINGS,
-                            ...config
-                          }
-
-                          void localForage.setItem(
-                            'defaultSettingsConfig',
-                            next
-                          )
-
-                          return {
-                            defaultSettingsConfig:
-                              next
-                          }
-                        })
-                  })
+          if (
+              "getCompletedRecordFiles"
+              not in
+              record
+          ):
+              helper = """
+          async function getCompletedRecordFiles(
+            sourcePath: string
+          ): Promise<string[]> {
+            if (
+              await checkFileExist(
+                sourcePath
+              )
+            ) {
+              const stat =
+                fs.statSync(
+                  sourcePath
                 )
-              """
-          )
 
+              if (
+                stat.isDirectory()
+              ) {
+                return fs
+                  .readdirSync(
+                    sourcePath
+                  )
+                  .filter(
+                    file =>
+                      /\\.(mp4|flv)$/i
+                        .test(
+                          file
+                        )
+                  )
+                  .sort()
+                  .map(
+                    file =>
+                      path.join(
+                        sourcePath,
+                        file
+                      )
+                  )
+              }
+            }
 
-          # ============================================================
-          # Cloud settings UI
-          # ============================================================
+            const mp4Path =
+              sourcePath.replace(
+                /\\.flv$/i,
+                '.mp4'
+              )
 
-          write_file(
-              "src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx",
-              """
-              import {
-                useState
-              } from 'react'
+            if (
+              await checkFileExist(
+                mp4Path
+              )
+            ) {
+              return [
+                mp4Path
+              ]
+            }
 
-              import {
-                Button
-              } from '@/shadcn/ui/button'
+            if (
+              await checkFileExist(
+                sourcePath
+              )
+            ) {
+              return [
+                sourcePath
+              ]
+            }
 
-              import {
-                FormLabel
-              } from '@/shadcn/ui/form'
+            return []
+          }
 
-              import {
-                Input
-              } from '@/shadcn/ui/input'
+          function makeRecordedFiles(
+            files: string[],
+            cloudTime: string
+          ): IRecordedFile[] {
+            return files.map(
+              (
+                file,
+                index
+              ) => {
+                const ext =
+                  path.extname(
+                    file
+                  )
 
-              import {
-                Switch
-              } from '@/shadcn/ui/switch'
+                const suffix =
+                  files.length > 1
+                    ? `_${String(
+                        index + 1
+                      ).padStart(
+                        3,
+                        '0'
+                      )}`
+                    : ''
 
-              import {
-                useToast
-              } from '@renderer/hooks/useToast'
+                return {
+                  path:
+                    file,
 
-              interface Props {
-                form: {
-                  watch:
-                    (
-                      name: string
-                    ) => unknown
-
-                  getValues:
-                    (
-                      name: string
-                    ) => unknown
-
-                  setValue:
-                    (
-                      name: string,
-                      value: unknown,
-                      options?: {
-                        shouldDirty?:
-                          boolean
-                      }
-                    ) => void
+                  cloudName:
+                    `${cloudTime}${suffix}${ext}`
                 }
               }
+            )
+          }
 
-              export default function CloudStorageSettings({
-                form
-              }: Props) {
-                const {
-                  toast
-                } = useToast()
 
-                const [
-                  testing,
-                  setTesting
-                ] = useState(
+          """
+
+              helper = "\n".join(
+                  line[10:]
+                  if line.startswith(
+                      "          "
+                  )
+                  else line
+                  for line in
+                  helper.splitlines()
+              )
+
+              marker = (
+                  "async function detectStreamResolution"
+                  "(streamConfig: IStreamConfig) {"
+              )
+
+              if (
+                  marker not in
+                  record
+              ):
+                  raise RuntimeError(
+                      "record.ts helper insertion failed"
+                  )
+
+              record = record.replace(
+                  marker,
+                  helper +
+                  marker,
+                  1
+              )
+
+          record = record.replace(
+              """      cb?.(SUCCESS_CODE)
+                await convert(convertSource, writeLog.bind(null, title), convertToMP4)
+                cb?.(SUCCESS_CODE)""",
+              """      cb?.(
+                SUCCESS_CODE
+              )
+
+              await convert(
+                convertSource,
+                writeLog.bind(
+                  null,
+                  title
+                ),
+                convertToMP4
+              )
+
+              const files =
+                await getCompletedRecordFiles(
+                  convertSource
+                )
+
+              cb?.(
+                SUCCESS_CODE,
+                undefined,
+                makeRecordedFiles(
+                  files,
+                  cloudTime
+                )
+              )"""
+          )
+
+          record = record.replace(
+              """      cb?.(errCode, errMsg)
+                await convert(convertSource, writeLog.bind(null, title), convertToMP4)
+                cb?.(errCode, errMsg)""",
+              """      cb?.(
+                errCode,
+                errMsg
+              )
+
+              await convert(
+                convertSource,
+                writeLog.bind(
+                  null,
+                  title
+                ),
+                convertToMP4
+              )
+
+              const files =
+                await getCompletedRecordFiles(
+                  convertSource
+                )
+
+              cb?.(
+                errCode,
+                errMsg,
+                makeRecordedFiles(
+                  files,
+                  cloudTime
+                )
+              )"""
+          )
+
+          write(
+              record_file,
+              record
+          )
+
+          # ============================================================
+          # 12. Douyin profile request optimization
+          # ============================================================
+
+          douyin_file = (
+              "src/main/crawler/plugins/douyin.js"
+          )
+
+          douyin = read(
+              douyin_file
+          )
+
+          if (
+              "DOUYIN_PROFILE_CACHE_MS"
+              not in
+              douyin
+          ):
+              marker = (
+                  "function buildDouyinProfileParams("
+              )
+
+              cache = """
+          const DOUYIN_PROFILE_CACHE_MS =
+            45 * 1000
+
+          const douyinProfileCache =
+            new Map()
+
+
+          """
+
+              cache = "\n".join(
+                  line[10:]
+                  if line.startswith(
+                      "          "
+                  )
+                  else line
+                  for line in
+                  cache.splitlines()
+              )
+
+              douyin = douyin.replace(
+                  marker,
+                  cache +
+                  marker,
+                  1
+              )
+
+          douyin = re.sub(
+              r"""  let generatedCookies =
+              ''
+
+            try \{
+              const bootstrap =
+                await request\(
+                  'https://www\.douyin\.com/',
+                  \{
+                    headers,
+                    proxy
+                  \}
+                \)
+
+              generatedCookies =
+                joinSetCookies\(
+                  bootstrap
+                \)
+            \} catch \{
+            \}
+
+            const finalCookie = \[
+              generatedCookies,
+              cookie
+            \]
+              \.filter\(Boolean\)
+              \.join\('; '\)""",
+
+              """  const finalCookie =
+            cookie ||
+            ''""",
+
+              douyin,
+              count=1,
+              flags=re.S
+          )
+
+          if (
+              "douyinProfileCache.get"
+              not in
+              douyin
+          ):
+              douyin = douyin.replace(
+                  """  if (!secUid) {
+              throw new Error(
+                'DOUYIN_SEC_UID_EMPTY'
+              )
+            }
+
+            const profileUrl =""",
+                  """  if (!secUid) {
+              throw new Error(
+                'DOUYIN_SEC_UID_EMPTY'
+              )
+            }
+
+            const cached =
+              douyinProfileCache.get(
+                secUid
+              )
+
+            if (
+              cached &&
+              Date.now() -
+                cached.time <
+                DOUYIN_PROFILE_CACHE_MS
+            ) {
+              return cached.profile
+            }
+
+            const profileUrl ="""
+              )
+
+          if (
+              "douyinProfileCache.set"
+              not in
+              douyin
+          ):
+              douyin = douyin.replace(
+                  """  return {
+              nickname,
+              live,
+              webRid,
+              secUid
+            }
+          }""",
+                  """  const profile = {
+              nickname,
+              live,
+              webRid,
+              secUid
+            }
+
+            douyinProfileCache.set(
+              secUid,
+              {
+                time:
+                  Date.now(),
+
+                profile
+              }
+            )
+
+            return profile
+          }"""
+              )
+
+          write(
+              douyin_file,
+              douyin
+          )
+
+          # ============================================================
+          # 13. Monitor interval/backoff
+          # ============================================================
+
+          operation_file = (
+              "src/renderer/src/components/StreamConfigList/components/"
+              "OperationBar.tsx"
+          )
+
+          operation = read(
+              operation_file
+          )
+
+          if (
+              "monitorErrorStreakRef"
+              not in
+              operation
+          ):
+              operation = operation.replace(
+                  """  const liveNotifiedRef =
+            useRef(false)
+
+          const {
+            streamConfig
+          } =
+            props""",
+                  """  const liveNotifiedRef =
+            useRef(false)
+
+          const monitorErrorStreakRef =
+            useRef(0)
+
+          const {
+            streamConfig
+          } =
+            props
+
+          const isDouyinProfile =
+            /^https?:\\/\\/(www\\.)?douyin\\.com\\/user\\//i.test(
+              streamConfig.roomUrl
+            )
+
+          const getMonitorDelay =
+            (
+              error =
+                false
+            ) => {
+              const configured =
+                Math.max(
+                  20,
+                  Number(
+                    streamConfig.interval
+                  ) ||
+                    30
+                )
+
+              const base =
+                isDouyinProfile
+                  ? Math.max(
+                      60,
+                      configured
+                    )
+                  : configured
+
+              if (
+                !error ||
+                !isDouyinProfile
+              ) {
+                return (
+                  base *
+                  1000
+                )
+              }
+
+              const factor =
+                Math.pow(
+                  2,
+                  Math.min(
+                    monitorErrorStreakRef
+                      .current,
+                    3
+                  )
+                )
+
+              return (
+                Math.min(
+                  300,
+                  base *
+                    factor
+                ) *
+                1000
+              )
+            }"""
+              )
+
+          operation = re.sub(
+              r"""  const scheduleMonitorOnly =
+              \(\) => \{
+              if \(
+                timer\.current
+              \) \{
+                clearTimeout\(
+                  timer\.current
+                \)
+              \}
+
+              timer\.current =
+                setTimeout\(
+                  \(\) => \{
+                    void handleMonitorOnly\(
+                      false
+                    \)
+                  \},
+
+                  1000 \*
+                    streamConfig\.interval
+                \)
+            \}""",
+
+              """  const scheduleMonitorOnly =
+            (
+              error =
+                false
+            ) => {
+              if (
+                timer.current
+              ) {
+                clearTimeout(
+                  timer.current
+                )
+              }
+
+              timer.current =
+                setTimeout(
+                  () => {
+                    void handleMonitorOnly(
+                      false
+                    )
+                  },
+
+                  getMonitorDelay(
+                    error
+                  )
+                )
+            }""",
+
+              operation,
+              count=1,
+              flags=re.S
+          )
+
+          operation = operation.replace(
+              """        scheduleMonitorOnly()
+
+              return""",
+              """        monitorErrorStreakRef.current =
+                  0
+
+                scheduleMonitorOnly(
                   false
                 )
 
-                const enabled =
-                  Boolean(
-                    form.watch(
-                      'webdavEnabled'
+                return""",
+              1
+          )
+
+          operation = operation.replace(
+              """        liveNotifiedRef.current =
+                  false
+
+                await updateStreamConfig(""",
+              """        liveNotifiedRef.current =
+                  false
+
+                monitorErrorStreakRef.current =
+                  0
+
+                await updateStreamConfig(""",
+              1
+          )
+
+          operation = operation.replace(
+              """        scheduleMonitorOnly()
+
+                return
+              }
+
+              if (
+                result.code ===
+                  UNKNOWN_CODE
+              ) {""",
+              """        scheduleMonitorOnly(
+                  false
+                )
+
+                return
+              }
+
+              if (
+                result.code ===
+                  UNKNOWN_CODE
+              ) {""",
+              1
+          )
+
+          operation = operation.replace(
+              """        scheduleMonitorOnly()
+
+                return
+              }
+              const monitoringOtherErrorStatus =""",
+              """        monitorErrorStreakRef.current +=
+                  1
+
+                scheduleMonitorOnly(
+                  true
+                )
+
+                return
+              }
+              const monitoringOtherErrorStatus =""",
+              1
+          )
+
+          if (
+              "scheduleMonitorOnly(\n        true"
+              not in
+              operation
+          ):
+              marker = (
+                  "      if (isFirst) {\n"
+                  "        const errMessage ="
+              )
+
+              operation = operation.replace(
+                  marker,
+                  """      monitorErrorStreakRef.current +=
+                1
+
+              scheduleMonitorOnly(
+                true
+              )
+
+              if (isFirst) {
+                const errMessage =""",
+                  1
+              )
+
+              operation = operation.replace(
+                  """      scheduleMonitorOnly()
+            }
+
+            const handleStartRecord =""",
+                  """    }
+
+            const handleStartRecord =""",
+                  1
+              )
+
+          operation = operation.replace(
+              """    if (
+              code ===
+              SUCCESS_CODE
+            ) {
+              await updateStreamConfig(""",
+              """    if (
+              code ===
+              SUCCESS_CODE
+            ) {
+              monitorErrorStreakRef.current =
+                0
+
+              await updateStreamConfig(""",
+              1
+          )
+
+          old_retry_pattern = r"""    if \(
+              code ===
+                CRAWLER_ERROR_CODE\.NOT_URLS \|\|
+              code ===
+                UNKNOWN_CODE
+            \) \{.*?
+              return
+            \}
+
+            if \(
+              Object\.values\("""
+
+          new_retry = """    const profileTransientError =
+              isDouyinProfile &&
+              [
+                CRAWLER_ERROR_CODE.TIMEOUT,
+                CRAWLER_ERROR_CODE.FORBIDDEN,
+                CRAWLER_ERROR_CODE.REQUEST_TOO_FAST
+              ].includes(
+                code
+              )
+
+            if (
+              code ===
+                CRAWLER_ERROR_CODE.NOT_URLS ||
+              code ===
+                UNKNOWN_CODE ||
+              profileTransientError
+            ) {
+              const hasError =
+                code !==
+                CRAWLER_ERROR_CODE.NOT_URLS
+
+              if (
+                hasError
+              ) {
+                monitorErrorStreakRef.current +=
+                  1
+              } else {
+                monitorErrorStreakRef.current =
+                  0
+              }
+
+              if (
+                timer.current
+              ) {
+                clearTimeout(
+                  timer.current
+                )
+              }
+
+              timer.current =
+                setTimeout(
+                  () => {
+                    void handleStartRecord(
+                      false
                     )
+                  },
+
+                  getMonitorDelay(
+                    hasError
+                  )
+                )
+
+              await updateStreamConfig(
+                {
+                  ...streamConfig,
+
+                  status:
+                    code ===
+                      CRAWLER_ERROR_CODE.NOT_URLS
+                      ? StreamStatus.MONITORING_OFFLINE
+                      : StreamStatus.MONITORING_ERROR
+                },
+
+                streamConfig.id
+              )
+
+              return
+            }
+
+            if (
+              Object.values("""
+
+          operation, count = re.subn(
+              old_retry_pattern,
+              new_retry,
+              operation,
+              count=1,
+              flags=re.S
+          )
+
+          if (
+              count != 1
+          ):
+              raise RuntimeError(
+                  "OperationBar retry block not found"
+              )
+
+          write(
+              operation_file,
+              operation
+          )
+
+          # ============================================================
+          # 14. Upload after recording callback
+          # ============================================================
+
+          list_file = (
+              "src/renderer/src/components/StreamConfigList/"
+              "StreamConfigList.tsx"
+          )
+
+          stream_list = read(
+              list_file
+          )
+
+          stream_list = stream_list.replace(
+              """window.api.onStreamRecordEnd(async (id, code, errMsg) => {""",
+              """window.api.onStreamRecordEnd(async (id, code, errMsg, recordedFiles) => {"""
+          )
+
+          if (
+              "const webdavConfig"
+              not in
+              stream_list
+          ):
+              marker = """      // 第二次回调，删除当前title
+                alreadyCallbackOneTimeSet.delete(id)
+
+                unknownErrorRetryTimesMap[id] = unknownErrorRetryTimesMap[id] || 0"""
+
+              upload_block = """      // 第二次回调，处理最终录像文件
+                alreadyCallbackOneTimeSet.delete(id)
+
+                const webdavConfig =
+                  useDefaultSettingsStore
+                    .getState()
+                    .defaultSettingsConfig
+
+                const shouldUpload =
+                  Boolean(
+                    webdavConfig
+                      .webdavEnabled
+                  ) &&
+                  Boolean(
+                    webdavConfig
+                      .webdavUrl
+                      ?.trim()
+                  ) &&
+                  Boolean(
+                    webdavConfig
+                      .webdavUsername
+                      ?.trim()
+                  ) &&
+                  Boolean(
+                    webdavConfig
+                      .webdavPassword
+                  ) &&
+                  Boolean(
+                    recordedFiles
+                      ?.length
                   )
 
-                const deleteAfterUpload =
-                  Boolean(
-                    form.watch(
-                      'webdavDeleteAfterUpload'
-                    )
-                  )
-
-                const handleTest =
-                  async () => {
-                    const url =
-                      String(
-                        form.getValues(
-                          'webdavUrl'
-                        ) ||
-                        ''
-                      ).trim()
-
-                    const username =
-                      String(
-                        form.getValues(
-                          'webdavUsername'
-                        ) ||
-                        ''
-                      ).trim()
-
-                    const password =
-                      String(
-                        form.getValues(
-                          'webdavPassword'
-                        ) ||
-                        ''
+                if (
+                  shouldUpload
+                ) {
+                  const current =
+                    useStreamConfigStore
+                      .getState()
+                      .streamConfigList
+                      .find(
+                        item =>
+                          item.id ===
+                          streamConfig.id
                       )
 
-                    const remoteRoot =
-                      String(
-                        form.getValues(
-                          'webdavRemoteRoot'
-                        ) ||
-                        '/'
-                      ).trim() ||
-                      '/'
+                  if (
+                    current
+                  ) {
+                    await updateStreamConfig(
+                      {
+                        ...current,
 
-                    if (
-                      !url ||
-                      !username ||
-                      !password
-                    ) {
-                      toast({
-                        title:
-                          'WebDAV 测试失败',
+                        cloudUploadStatus:
+                          'uploading'
+                      },
 
-                        description:
-                          '请先填写 WebDAV 地址、用户名和密码',
-
-                        variant:
-                          'destructive'
-                      })
-
-                      return
-                    }
-
-                    setTesting(
-                      true
+                      current.id
                     )
+                  }
 
+                  void (async () => {
                     try {
                       const result =
                         await window.api
-                          .testWebdav({
-                            url,
-                            username,
-                            password,
-                            remoteRoot
+                          .uploadWebdav({
+                            url:
+                              webdavConfig
+                                .webdavUrl!
+                                .trim(),
+
+                            username:
+                              webdavConfig
+                                .webdavUsername!
+                                .trim(),
+
+                            password:
+                              webdavConfig
+                                .webdavPassword!,
+
+                            remoteRoot:
+                              webdavConfig
+                                .webdavRemoteRoot ||
+                              '/',
+
+                            streamerName:
+                              streamConfig.title,
+
+                            files:
+                              recordedFiles!,
+
+                            deleteAfterUpload:
+                              Boolean(
+                                webdavConfig
+                                  .webdavDeleteAfterUpload
+                              ),
+
+                            retryTimes:
+                              webdavConfig
+                                .webdavRetryTimes ||
+                              3
                           })
+
+                      const latest =
+                        useStreamConfigStore
+                          .getState()
+                          .streamConfigList
+                          .find(
+                            item =>
+                              item.id ===
+                              streamConfig.id
+                          )
+
+                      if (
+                        latest
+                      ) {
+                        await useStreamConfigStore
+                          .getState()
+                          .updateStreamConfig(
+                            {
+                              ...latest,
+
+                              cloudUploadStatus:
+                                result.success
+                                  ? 'success'
+                                  : 'error'
+                            },
+
+                            latest.id
+                          )
+                      }
 
                       toast({
                         title:
-                          result.success
-                            ? 'WebDAV 测试成功'
-                            : 'WebDAV 测试失败',
+                          streamConfig.title,
 
                         description:
-                          result.message,
+                          result.success
+                            ? '云端录像上传成功'
+                            : '云端录像上传失败，本地文件已保留',
 
                         variant:
                           result.success
@@ -1235,2088 +2826,140 @@ jobs:
                     } catch (
                       error
                     ) {
-                      toast({
-                        title:
-                          'WebDAV 测试失败',
-
-                        description:
-                          error instanceof
-                            Error
-                            ? error.message
-                            : String(
-                                error
-                              ),
-
-                        variant:
-                          'destructive'
-                      })
-                    } finally {
-                      setTesting(
-                        false
-                      )
-                    }
-                  }
-
-                return (
-                  <div className="space-y-4 rounded-lg border p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <FormLabel>
-                          云端存储 / 自动上传
-                        </FormLabel>
-
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          录像完成后自动按主播名称分类上传
-                        </div>
-                      </div>
-
-                      <Switch
-                        checked={
-                          enabled
-                        }
-                        onCheckedChange={(
-                          value
-                        ) => {
-                          form.setValue(
-                            'webdavEnabled',
-                            value,
-                            {
-                              shouldDirty:
-                                true
-                            }
+                      const latest =
+                        useStreamConfigStore
+                          .getState()
+                          .streamConfigList
+                          .find(
+                            item =>
+                              item.id ===
+                              streamConfig.id
                           )
-                        }}
-                      />
-                    </div>
 
-                    {enabled && (
-                      <div className="space-y-4">
-                        <div className="space-y-1">
-                          <FormLabel>
-                            WebDAV 地址
-                          </FormLabel>
+                      if (
+                        latest
+                      ) {
+                        await useStreamConfigStore
+                          .getState()
+                          .updateStreamConfig(
+                            {
+                              ...latest,
 
-                          <Input
-                            value={String(
-                              form.watch(
-                                'webdavUrl'
-                              ) ||
-                              ''
-                            )}
-                            onChange={(
-                              event
-                            ) => {
-                              form.setValue(
-                                'webdavUrl',
-                                event.target
-                                  .value,
-                                {
-                                  shouldDirty:
-                                    true
-                                }
-                              )
-                            }}
-                            placeholder="https://pan.lansod.cn/dav"
-                          />
-                        </div>
+                              cloudUploadStatus:
+                                'error'
+                            },
 
-                        <div className="space-y-1">
-                          <FormLabel>
-                            用户名
-                          </FormLabel>
+                            latest.id
+                          )
+                      }
+                    }
+                  })()
+                }
 
-                          <Input
-                            value={String(
-                              form.watch(
-                                'webdavUsername'
-                              ) ||
-                              ''
-                            )}
-                            onChange={(
-                              event
-                            ) => {
-                              form.setValue(
-                                'webdavUsername',
-                                event.target
-                                  .value,
-                                {
-                                  shouldDirty:
-                                    true
-                                }
-                              )
-                            }}
-                            autoComplete="off"
-                          />
-                        </div>
+                unknownErrorRetryTimesMap[id] = unknownErrorRetryTimesMap[id] || 0"""
 
-                        <div className="space-y-1">
-                          <FormLabel>
-                            密码
-                          </FormLabel>
-
-                          <Input
-                            type="password"
-                            value={String(
-                              form.watch(
-                                'webdavPassword'
-                              ) ||
-                              ''
-                            )}
-                            onChange={(
-                              event
-                            ) => {
-                              form.setValue(
-                                'webdavPassword',
-                                event.target
-                                  .value,
-                                {
-                                  shouldDirty:
-                                    true
-                                }
-                              )
-                            }}
-                            autoComplete="new-password"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <FormLabel>
-                            上传根目录
-                          </FormLabel>
-
-                          <Input
-                            value={String(
-                              form.watch(
-                                'webdavRemoteRoot'
-                              ) ||
-                              '/'
-                            )}
-                            onChange={(
-                              event
-                            ) => {
-                              form.setValue(
-                                'webdavRemoteRoot',
-                                event.target
-                                  .value,
-                                {
-                                  shouldDirty:
-                                    true
-                                }
-                              )
-                            }}
-                            placeholder="/"
-                          />
-
-                          <div className="text-xs text-muted-foreground">
-                            小蓝云盘 WebDAV 已绑定“抖音直播录制”文件夹时保持 / 即可
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-4">
-                          <div>
-                            <FormLabel>
-                              上传成功后删除本地录像
-                            </FormLabel>
-
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              仅云端文件大小校验成功后才删除本地文件
-                            </div>
-                          </div>
-
-                          <Switch
-                            checked={
-                              deleteAfterUpload
-                            }
-                            onCheckedChange={(
-                              value
-                            ) => {
-                              form.setValue(
-                                'webdavDeleteAfterUpload',
-                                value,
-                                {
-                                  shouldDirty:
-                                    true
-                                }
-                              )
-                            }}
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <FormLabel>
-                            上传失败重试次数
-                          </FormLabel>
-
-                          <Input
-                            type="number"
-                            min={1}
-                            max={10}
-                            value={Number(
-                              form.watch(
-                                'webdavRetryTimes'
-                              ) ||
-                              3
-                            )}
-                            onChange={(
-                              event
-                            ) => {
-                              const value =
-                                Number(
-                                  event.target
-                                    .value
-                                ) ||
-                                3
-
-                              form.setValue(
-                                'webdavRetryTimes',
-
-                                Math.max(
-                                  1,
-                                  Math.min(
-                                    10,
-                                    value
-                                  )
-                                ),
-
-                                {
-                                  shouldDirty:
-                                    true
-                                }
-                              )
-                            }}
-                          />
-                        </div>
-
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={
-                            testing
-                          }
-                          onClick={
-                            handleTest
-                          }
-                        >
-                          {testing
-                            ? '测试中...'
-                            : '测试上传'}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )
-              }
-              """
-          )
-
-
-          # ============================================================
-          # Default settings sheet
-          # ============================================================
-
-          replace_once(
-              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx",
-              """
-              import { testXizhiPushNotification } from '@renderer/lib/utils'
-              """,
-              """
-              import { testXizhiPushNotification } from '@renderer/lib/utils'
-              import CloudStorageSettings from './CloudStorageSettings'
-              """
-          )
-
-          replace_once(
-              "src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx",
-              """
-              const formSchema = z.object({
-                directory: z.string(),
-                lang: z.string(),
-                xizhiKey: z.optional(z.string()),
-                logsDir: z.optional(z.string())
-              })
-              """,
-              """
-              const formSchema = z.object({
-                directory:
-                  z.string(),
-
-                lang:
-                  z.string(),
-
-                xizhiKey:
-                  z.optional(
-                    z.string()
-                  ),
-
-                logsDir:
-                  z.optional(
-                    z.string()
-                  ),
-
-                webdavEnabled:
-                  z.optional(
-                    z.boolean()
-                  ),
-
-                webdavUrl:
-                  z.optional(
-                    z.string()
-                  ),
-
-                webdavUsername:
-                  z.optional(
-                    z.string()
-                  ),
-
-                webdavPassword:
-                  z.optional(
-                    z.string()
-                  ),
-
-                webdavRemoteRoot:
-                  z.optional(
-                    z.string()
-                  ),
-
-                webdavDeleteAfterUpload:
-                  z.optional(
-                    z.boolean()
-                  ),
-
-                webdavRetryTimes:
-                  z.optional(
-                    z.number()
-                  )
-              })
-              """
-          )
-
-          settings_path = (
-              "src/renderer/src/components/NavBar/components/"
-              "DefaultSettingSheet.tsx"
-          )
-
-          settings_text = read_file(
-              settings_path
-          )
-
-          if (
-              "<CloudStorageSettings form={form} />"
-              not in settings_text
-          ):
-              marker = dedent(
-                  """
-                          <FormField
-                            control={form.control}
-                            name="logsDir"
-                  """
-              )
-
-              if marker not in settings_text:
+              if (
+                  marker not in
+                  stream_list
+              ):
                   raise RuntimeError(
-                      "Could not find logsDir field"
+                      "StreamConfigList marker not found"
                   )
 
-              settings_text = settings_text.replace(
+              stream_list = stream_list.replace(
                   marker,
-
-                  dedent(
-                      """
-                          <CloudStorageSettings
-                            form={form}
-                          />
-
-                          <FormField
-                            control={form.control}
-                            name="logsDir"
-                      """
-                  ),
-
+                  upload_block,
                   1
               )
 
-              Path(
-                  settings_path
-              ).write_text(
-                  settings_text,
-                  encoding="utf-8"
-              )
-
+          write(
+              list_file,
+              stream_list
+          )
 
           # ============================================================
-          # Preload
+          # 15. Upload status badge
           # ============================================================
 
-          replace_once(
-              "src/preload/index.ts",
-              """
-                DOUYIN_LOGIN_STATUS
-              } from '../const'
-              """,
-              """
-                DOUYIN_LOGIN_STATUS,
-                TEST_WEBDAV,
-                UPLOAD_WEBDAV
-              } from '../const'
-              """
+          card_file = (
+              "src/renderer/src/components/StreamConfigList/components/"
+              "StreamConfigCard.tsx"
           )
 
-          replace_once(
-              "src/preload/index.ts",
-              """
-                startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),
-              """,
-              """
-                testWebdav: (config: {
-                  url: string
-                  username: string
-                  password: string
-                  remoteRoot?: string
-                }) =>
-                  ipcRenderer.invoke(
-                    TEST_WEBDAV,
-                    config
-                  ),
-
-                uploadWebdav: (request: {
-                  url: string
-                  username: string
-                  password: string
-                  remoteRoot?: string
-                  streamerName: string
-                  files: IRecordedFile[]
-                  deleteAfterUpload?: boolean
-                  retryTimes?: number
-                }) =>
-                  ipcRenderer.invoke(
-                    UPLOAD_WEBDAV,
-                    request
-                  ),
-
-                startFrpcProcess: (code: string) => ipcRenderer.invoke(START_FRPC_PROCESS, code),
-              """
-          )
-
-          replace_once(
-              "src/preload/index.ts",
-              """
-                onStreamRecordEnd: (callback: (title: string, code: number, errMsg?: string) => void) => {
-                  ipcRenderer.on(STREAM_RECORD_END, (_, title, code, errMsg) => {
-                    callback(title, code, errMsg)
-                  })
-                },
-              """,
-              """
-                onStreamRecordEnd: (
-                  callback: (
-                    title: string,
-                    code: number,
-                    errMsg?: string,
-                    files?: IRecordedFile[]
-                  ) => void
-                ) => {
-                  ipcRenderer.on(
-                    STREAM_RECORD_END,
-                    (
-                      _,
-                      title,
-                      code,
-                      errMsg,
-                      files
-                    ) => {
-                      callback(
-                        title,
-                        code,
-                        errMsg,
-                        files
-                      )
-                    }
-                  )
-                },
-              """
-          )
-
-
-          # ============================================================
-          # Preload declaration
-          # ============================================================
-
-          replace_once(
-              "src/preload/index.d.ts",
-              """
-                    startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>
-              """,
-              """
-                    testWebdav: (config: {
-                      url: string
-                      username: string
-                      password: string
-                      remoteRoot?: string
-                    }) => Promise<{
-                      success: boolean
-                      message: string
-                    }>
-
-                    uploadWebdav: (request: {
-                      url: string
-                      username: string
-                      password: string
-                      remoteRoot?: string
-                      streamerName: string
-                      files: IRecordedFile[]
-                      deleteAfterUpload?: boolean
-                      retryTimes?: number
-                    }) => Promise<{
-                      success: boolean
-                      results: Array<{
-                        path: string
-                        cloudName: string
-                        success: boolean
-                        deleted: boolean
-                        message?: string
-                      }>
-                    }>
-
-                    startFrpcProcess: (code: string) => Promise<{ status: boolean; code?: string; port?: number }>
-              """
-          )
-
-          replace_once(
-              "src/preload/index.d.ts",
-              """
-                    onStreamRecordEnd: (callback: (id: string, code: number, errMsg?: string) => void) => void
-              """,
-              """
-                    onStreamRecordEnd: (
-                      callback: (
-                        id: string,
-                        code: number,
-                        errMsg?: string,
-                        files?: IRecordedFile[]
-                      ) => void
-                    ) => void
-              """
-          )
-
-
-          # ============================================================
-          # Main process
-          # ============================================================
-
-          replace_once(
-              "src/main/index.ts",
-              """
-                DOUYIN_LOGIN_STATUS
-              } from '../const'
-              """,
-              """
-                DOUYIN_LOGIN_STATUS,
-                TEST_WEBDAV,
-                UPLOAD_WEBDAV
-              } from '../const'
-              """
-          )
-
-          replace_once(
-              "src/main/index.ts",
-              """
-              } from './douyin-session'
-
-              export const writeLog = writeLogWrapper(app.getPath('userData'))
-              """,
-              """
-              } from './douyin-session'
-
-              import {
-                testWebdav,
-                uploadWebdav
-              } from './webdav'
-
-              export const writeLog = writeLogWrapper(app.getPath('userData'))
-              """
-          )
-
-          replace_once(
-              "src/main/index.ts",
-              """
-                ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
-                  shell.openExternal(url)
-                })
-              """,
-              """
-                ipcMain.handle(
-                  TEST_WEBDAV,
-                  async (
-                    _,
-                    config:
-                      Parameters<
-                        typeof testWebdav
-                      >[0]
-                  ) => {
-                    return await testWebdav(
-                      config
-                    )
-                  }
-                )
-
-                ipcMain.handle(
-                  UPLOAD_WEBDAV,
-                  async (
-                    _,
-                    request:
-                      Parameters<
-                        typeof uploadWebdav
-                      >[0]
-                  ) => {
-                    return await uploadWebdav(
-                      request
-                    )
-                  }
-                )
-
-                ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
-                  shell.openExternal(url)
-                })
-              """
-          )
-
-          replace_once(
-              "src/main/index.ts",
-              """
-                    (code: number, errMsg?: string) => {
-                      win?.webContents.send(STREAM_RECORD_END, id, code, errMsg)
-                      clearTimerWhenAllFfmpegProcessEnd()
-                    }
-              """,
-              """
-                    (
-                      code: number,
-                      errMsg?: string,
-                      files?: IRecordedFile[]
-                    ) => {
-                      win?.webContents.send(
-                        STREAM_RECORD_END,
-                        id,
-                        code,
-                        errMsg,
-                        files
-                      )
-
-                      clearTimerWhenAllFfmpegProcessEnd()
-                    }
-              """
-          )
-
-
-          # ============================================================
-          # Recording output
-          # ============================================================
-
-          replace_once(
-              "src/main/ffmpeg/record.ts",
-              """
-                cb?: (code: number, errMsg?: string) => void
-              ) {
-              """,
-              """
-                cb?: (
-                  code: number,
-                  errMsg?: string,
-                  files?: IRecordedFile[]
-                ) => void
-              ) {
-              """
-          )
-
-          replace_once(
-              "src/main/ffmpeg/record.ts",
-              """
-                const time = dayjs().format('YYYY.MM.DD-HH.mm.ss')
-                const baseOutput = path.resolve(directory, `${filename}-${time}`)
-              """,
-              """
-                const now = dayjs()
-
-                const time =
-                  now.format(
-                    'YYYY.MM.DD-HH.mm.ss'
-                  )
-
-                const cloudTime =
-                  now.format(
-                    'YYYY-MM-DD_HH-mm-ss'
-                  )
-
-                const baseOutput =
-                  path.resolve(
-                    directory,
-                    `${filename}-${time}`
-                  )
-              """
-          )
-
-          record_path = (
-              "src/main/ffmpeg/record.ts"
-          )
-
-          record_text = read_file(
-              record_path
+          card = read(
+              card_file
           )
 
           if (
-              "async function getCompletedRecordFiles"
-              not in record_text
+              "正在上传云盘"
+              not in
+              card
           ):
-              marker = (
-                  "async function detectStreamResolution"
-                  "(streamConfig: IStreamConfig) {"
-              )
+              marker = """            {streamConfig.status !== StreamStatus.NOT_STARTED && (
+                <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
+              )}"""
 
-              helper = dedent(
-                  r"""
-                  async function getCompletedRecordFiles(
-                    sourcePath: string
-                  ): Promise<string[]> {
-                    if (
-                      !(await checkFileExist(
-                        sourcePath
-                      ))
-                    ) {
-                      const mp4Path =
-                        sourcePath.replace(
-                          /\.flv$/i,
-                          '.mp4'
-                        )
+              replacement = """            {streamConfig.status !== StreamStatus.NOT_STARTED && (
+                <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
+              )}
 
-                      return await checkFileExist(
-                        mp4Path
-                      )
-                        ? [mp4Path]
-                        : []
-                    }
+              {streamConfig.cloudUploadStatus === 'uploading' && (
+                <Badge variant="outline">
+                  正在上传云盘
+                </Badge>
+              )}
 
-                    const stat =
-                      fs.statSync(
-                        sourcePath
-                      )
+              {streamConfig.cloudUploadStatus === 'success' && (
+                <Badge variant="outline">
+                  已上传
+                </Badge>
+              )}
 
-                    if (
-                      !stat.isDirectory()
-                    ) {
-                      const mp4Path =
-                        sourcePath.replace(
-                          /\.flv$/i,
-                          '.mp4'
-                        )
-
-                      if (
-                        await checkFileExist(
-                          mp4Path
-                        )
-                      ) {
-                        return [
-                          mp4Path
-                        ]
-                      }
-
-                      return [
-                        sourcePath
-                      ]
-                    }
-
-                    return fs
-                      .readdirSync(
-                        sourcePath
-                      )
-                      .filter(
-                        (file) =>
-                          /\.(mp4|flv)$/i.test(
-                            file
-                          )
-                      )
-                      .sort()
-                      .map(
-                        (file) =>
-                          path.join(
-                            sourcePath,
-                            file
-                          )
-                      )
-                  }
-
-                  function toRecordedFiles(
-                    files: string[],
-                    cloudTime: string
-                  ): IRecordedFile[] {
-                    return files.map(
-                      (
-                        file,
-                        index
-                      ) => {
-                        const extension =
-                          path.extname(
-                            file
-                          )
-
-                        const suffix =
-                          files.length > 1
-                            ? `_${String(
-                                index + 1
-                              ).padStart(
-                                3,
-                                '0'
-                              )}`
-                            : ''
-
-                        return {
-                          path:
-                            file,
-
-                          cloudName:
-                            `${cloudTime}${suffix}${extension}`
-                        }
-                      }
-                    )
-                  }
-
-
-                  """
-              )
-
-              if marker not in record_text:
-                  raise RuntimeError(
-                      "record helper marker not found"
-                  )
-
-              record_text = (
-                  record_text.replace(
-                      marker,
-                      helper + marker,
-                      1
-                  )
-              )
-
-              Path(
-                  record_path
-              ).write_text(
-                  record_text,
-                  encoding="utf-8"
-              )
-
-          replace_once(
-              record_path,
-              """
-                    cb?.(SUCCESS_CODE)
-                    await convert(convertSource, writeLog.bind(null, title), convertToMP4)
-                    cb?.(SUCCESS_CODE)
-              """,
-              """
-                    cb?.(
-                      SUCCESS_CODE
-                    )
-
-                    await convert(
-                      convertSource,
-                      writeLog.bind(
-                        null,
-                        title
-                      ),
-                      convertToMP4
-                    )
-
-                    const completedFiles =
-                      await getCompletedRecordFiles(
-                        convertSource
-                      )
-
-                    cb?.(
-                      SUCCESS_CODE,
-                      undefined,
-                      toRecordedFiles(
-                        completedFiles,
-                        cloudTime
-                      )
-                    )
-              """
-          )
-
-          replace_once(
-              record_path,
-              """
-                    cb?.(errCode, errMsg)
-                    await convert(convertSource, writeLog.bind(null, title), convertToMP4)
-                    cb?.(errCode, errMsg)
-              """,
-              """
-                    cb?.(
-                      errCode,
-                      errMsg
-                    )
-
-                    await convert(
-                      convertSource,
-                      writeLog.bind(
-                        null,
-                        title
-                      ),
-                      convertToMP4
-                    )
-
-                    const completedFiles =
-                      await getCompletedRecordFiles(
-                        convertSource
-                      )
-
-                    cb?.(
-                      errCode,
-                      errMsg,
-                      toRecordedFiles(
-                        completedFiles,
-                        cloudTime
-                      )
-                    )
-              """
-          )
-
-
-          # ============================================================
-          # Xizhi: remove foreground restriction
-          # ============================================================
-
-          replace_once(
-              "src/renderer/src/lib/utils.ts",
-              """
-              export function useXizhiToPushNotification(options: {
-                key: string
-                title: string
-                content?: string
-              }) {
-                const isHide = document.hidden
-                if (!isHide) return
-                const titleAndContent = options.content ? `${options.title} - ${options.content}` : options.title
-                fetch(`${options.key}?title=${encodeURIComponent(titleAndContent)}`)
-              }
-              """,
-              """
-              export function useXizhiToPushNotification(options: {
-                key: string
-                title: string
-                content?: string
-              }) {
-                const key =
-                  options.key.trim()
-
-                if (!key) {
-                  return
-                }
-
-                const titleAndContent =
-                  options.content
-                    ? `${options.title} - ${options.content}`
-                    : options.title
-
-                const separator =
-                  key.includes('?')
-                    ? '&'
-                    : '?'
-
-                void fetch(
-                  `${key}${separator}title=${encodeURIComponent(
-                    titleAndContent
-                  )}`
-                ).catch(
-                  () => undefined
-                )
-              }
-              """
-          )
-
-
-          # ============================================================
-          # Douyin profile request optimization
-          # ============================================================
-
-          douyin_path = (
-              "src/main/crawler/plugins/douyin.js"
-          )
-
-          douyin_text = read_file(
-              douyin_path
-          )
-
-          cache_marker = dedent(
-              """
-              function buildDouyinProfileParams(
-                secUid
-              ) {
-              """
-          )
-
-          if (
-              "DOUYIN_PROFILE_CACHE_MS"
-              not in douyin_text
-          ):
-              cache_code = dedent(
-                  """
-                  const DOUYIN_PROFILE_CACHE_MS =
-                    45 * 1000
-
-                  const douyinProfileCache =
-                    new Map()
-
-
-                  """
-              )
+              {streamConfig.cloudUploadStatus === 'error' && (
+                <Badge variant="outline">
+                  上传失败
+                </Badge>
+              )}"""
 
               if (
-                  cache_marker not in
-                  douyin_text
+                  marker not in
+                  card
               ):
                   raise RuntimeError(
-                      "Douyin cache marker not found"
+                      "StreamConfigCard marker not found"
                   )
 
-              douyin_text = (
-                  douyin_text.replace(
-                      cache_marker,
-                      cache_code +
-                      cache_marker,
-                      1
-                  )
+              card = card.replace(
+                  marker,
+                  replacement,
+                  1
               )
 
-              Path(
-                  douyin_path
-              ).write_text(
-                  douyin_text,
-                  encoding="utf-8"
-              )
-
-          replace_once(
-              douyin_path,
-              """
-              async function getDouyinAnchorProfile(
-                secUid,
-                others = {}
-              ) {
-                const {
-                  proxy,
-                  cookie
-                } =
-                  others
-
-                if (!secUid) {
-                  throw new Error(
-                    'DOUYIN_SEC_UID_EMPTY'
-                  )
-                }
-
-                const profileUrl =
-                  'https://www.douyin.com/user/' +
-                  encodeURIComponent(
-                    secUid
-                  )
-
-                const headers = {
-                  Referer:
-                    profileUrl,
-
-                  'User-Agent':
-                    PC_USER_AGENT
-                }
-
-                let generatedCookies =
-                  ''
-
-                try {
-                  const bootstrap =
-                    await request(
-                      'https://www.douyin.com/',
-                      {
-                        headers,
-                        proxy
-                      }
-                    )
-
-                  generatedCookies =
-                    joinSetCookies(
-                      bootstrap
-                    )
-                } catch {
-                }
-
-                const finalCookie = [
-                  generatedCookies,
-                  cookie
-                ]
-                  .filter(Boolean)
-                  .join('; ')
-
-                const params =
-                  buildDouyinProfileParams(
-                    secUid
-                  )
-              """,
-              """
-              async function getDouyinAnchorProfile(
-                secUid,
-                others = {}
-              ) {
-                const {
-                  proxy,
-                  cookie
-                } =
-                  others
-
-                if (!secUid) {
-                  throw new Error(
-                    'DOUYIN_SEC_UID_EMPTY'
-                  )
-                }
-
-                const cached =
-                  douyinProfileCache.get(
-                    secUid
-                  )
-
-                if (
-                  cached &&
-                  Date.now() -
-                    cached.time <
-                    DOUYIN_PROFILE_CACHE_MS
-                ) {
-                  return cached.profile
-                }
-
-                const profileUrl =
-                  'https://www.douyin.com/user/' +
-                  encodeURIComponent(
-                    secUid
-                  )
-
-                const headers = {
-                  Referer:
-                    profileUrl,
-
-                  Origin:
-                    'https://www.douyin.com',
-
-                  'User-Agent':
-                    PC_USER_AGENT,
-
-                  Accept:
-                    'application/json, text/plain, */*',
-
-                  'Accept-Language':
-                    'zh-CN,zh;q=0.9'
-                }
-
-                const finalCookie =
-                  cookie ||
-                  ''
-
-                const params =
-                  buildDouyinProfileParams(
-                    secUid
-                  )
-              """
+          write(
+              card_file,
+              card
           )
-
-          replace_once(
-              douyin_path,
-              """
-                return {
-                  nickname,
-                  live,
-                  webRid,
-                  secUid
-                }
-              }
-              """,
-              """
-                const profile = {
-                  nickname,
-                  live,
-                  webRid,
-                  secUid
-                }
-
-                douyinProfileCache.set(
-                  secUid,
-                  {
-                    time:
-                      Date.now(),
-
-                    profile
-                  }
-                )
-
-                return profile
-              }
-              """
-          )
-
-
-          # ============================================================
-          # OperationBar:
-          # - profile URL >= 60 second interval
-          # - risk control exponential backoff
-          # ============================================================
-
-          operation_path = (
-              "src/renderer/src/components/"
-              "StreamConfigList/components/"
-              "OperationBar.tsx"
-          )
-
-          replace_once(
-              operation_path,
-              """
-                const liveNotifiedRef =
-                  useRef(false)
-
-                const {
-                  streamConfig
-                } =
-                  props
-              """,
-              """
-                const liveNotifiedRef =
-                  useRef(false)
-
-                const monitorErrorStreakRef =
-                  useRef(0)
-
-                const {
-                  streamConfig
-                } =
-                  props
-
-                const isDouyinProfile =
-                  /^https?:\\/\\/(www\\.)?douyin\\.com\\/user\\//i.test(
-                    streamConfig.roomUrl
-                  )
-
-                const getMonitorDelayMs =
-                  (
-                    hasError =
-                      false
-                  ) => {
-                    const configured =
-                      Math.max(
-                        20,
-                        Number(
-                          streamConfig.interval
-                        ) ||
-                          30
-                      )
-
-                    const baseSeconds =
-                      isDouyinProfile
-                        ? Math.max(
-                            60,
-                            configured
-                          )
-                        : configured
-
-                    if (
-                      !hasError ||
-                      !isDouyinProfile
-                    ) {
-                      return (
-                        baseSeconds *
-                        1000
-                      )
-                    }
-
-                    const factor =
-                      Math.pow(
-                        2,
-                        Math.min(
-                          monitorErrorStreakRef
-                            .current,
-                          3
-                        )
-                      )
-
-                    return (
-                      Math.min(
-                        300,
-                        baseSeconds *
-                          factor
-                      ) *
-                      1000
-                    )
-                  }
-              """
-          )
-
-          replace_once(
-              operation_path,
-              """
-                const scheduleMonitorOnly =
-                  () => {
-                    if (
-                      timer.current
-                    ) {
-                      clearTimeout(
-                        timer.current
-                      )
-                    }
-
-                    timer.current =
-                      setTimeout(
-                        () => {
-                          void handleMonitorOnly(
-                            false
-                          )
-                        },
-
-                        1000 *
-                          streamConfig.interval
-                      )
-                  }
-              """,
-              """
-                const scheduleMonitorOnly =
-                  (
-                    hasError =
-                      false
-                  ) => {
-                    if (
-                      timer.current
-                    ) {
-                      clearTimeout(
-                        timer.current
-                      )
-                    }
-
-                    timer.current =
-                      setTimeout(
-                        () => {
-                          void handleMonitorOnly(
-                            false
-                          )
-                        },
-
-                        getMonitorDelayMs(
-                          hasError
-                        )
-                      )
-                  }
-
-                const scheduleAutoRecordRetry =
-                  (
-                    hasError =
-                      false
-                  ) => {
-                    if (
-                      timer.current
-                    ) {
-                      clearTimeout(
-                        timer.current
-                      )
-                    }
-
-                    timer.current =
-                      setTimeout(
-                        () => {
-                          void handleStartRecord(
-                            false
-                          )
-                        },
-
-                        getMonitorDelayMs(
-                          hasError
-                        )
-                      )
-                  }
-              """
-          )
-
-          # Success monitor reset.
-          replace_once(
-              operation_path,
-              """
-                    scheduleMonitorOnly()
-
-                    return
-              """,
-              """
-                    monitorErrorStreakRef.current =
-                      0
-
-                    scheduleMonitorOnly(
-                      false
-                    )
-
-                    return
-              """
-          )
-
-          # Offline monitor reset.
-          replace_once(
-              operation_path,
-              """
-                    liveNotifiedRef.current =
-                      false
-
-                    await updateStreamConfig(
-              """,
-              """
-                    liveNotifiedRef.current =
-                      false
-
-                    monitorErrorStreakRef.current =
-                      0
-
-                    await updateStreamConfig(
-              """
-          )
-
-          # First remaining monitor schedule is offline.
-          operation_text = read_file(
-              operation_path
-          )
-
-          offline_section = dedent(
-              """
-                    scheduleMonitorOnly()
-
-                    return
-                  }
-
-                  if (
-                    result.code ===
-                      UNKNOWN_CODE
-                  ) {
-              """
-          )
-
-          offline_replacement = dedent(
-              """
-                    scheduleMonitorOnly(
-                      false
-                    )
-
-                    return
-                  }
-
-                  if (
-                    result.code ===
-                      UNKNOWN_CODE
-                  ) {
-              """
-          )
-
-          if (
-              offline_section in
-              operation_text
-          ):
-              operation_text = (
-                  operation_text.replace(
-                      offline_section,
-                      offline_replacement,
-                      1
-                  )
-              )
-
-              Path(
-                  operation_path
-              ).write_text(
-                  operation_text,
-                  encoding="utf-8"
-              )
-
-
-          # Unknown error monitoring.
-          replace_once(
-              operation_path,
-              """
-                    scheduleMonitorOnly()
-
-                    return
-                  }
-                  const monitoringOtherErrorStatus =
-              """,
-              """
-                    monitorErrorStreakRef.current +=
-                      1
-
-                    scheduleMonitorOnly(
-                      true
-                    )
-
-                    return
-                  }
-                  const monitoringOtherErrorStatus =
-              """
-          )
-
-          # Other error monitoring.
-          operation_text = read_file(
-              operation_path
-          )
-
-          other_error_marker = dedent(
-              """
-                  if (isFirst) {
-                    const errMessage =
-              """
-          )
-
-          if (
-              "scheduleMonitorOnly(\n        true\n      )\n\n      if (isFirst)"
-              not in operation_text
-          ):
-              if (
-                  other_error_marker not in
-                  operation_text
-              ):
-                  raise RuntimeError(
-                      "Other monitoring error marker not found"
-                  )
-
-              operation_text = (
-                  operation_text.replace(
-                      other_error_marker,
-
-                      dedent(
-                          """
-                            monitorErrorStreakRef.current +=
-                              1
-
-                            scheduleMonitorOnly(
-                              true
-                            )
-
-                            if (isFirst) {
-                              const errMessage =
-                          """
-                      ),
-
-                      1
-                  )
-              )
-
-              # Remove the old final scheduleMonitorOnly immediately
-              # after the error toast block.
-              old_tail = dedent(
-                  """
-                        }
-                      }
-
-                      scheduleMonitorOnly()
-                    }
-
-                    const handleStartRecord =
-                  """
-              )
-
-              new_tail = dedent(
-                  """
-                        }
-                      }
-                    }
-
-                    const handleStartRecord =
-                  """
-              )
-
-              if (
-                  old_tail in
-                  operation_text
-              ):
-                  operation_text = (
-                      operation_text.replace(
-                          old_tail,
-                          new_tail,
-                          1
-                      )
-                  )
-
-              Path(
-                  operation_path
-              ).write_text(
-                  operation_text,
-                  encoding="utf-8"
-              )
-
-
-          # Auto-record success resets backoff.
-          replace_once(
-              operation_path,
-              """
-                  if (
-                    code ===
-                    SUCCESS_CODE
-                  ) {
-                    await updateStreamConfig(
-              """,
-              """
-                  if (
-                    code ===
-                    SUCCESS_CODE
-                  ) {
-                    monitorErrorStreakRef.current =
-                      0
-
-                    await updateStreamConfig(
-              """
-          )
-
-          # Replace the retry handling for auto-record.
-          old_retry = dedent(
-              """
-                  if (
-                    code ===
-                      CRAWLER_ERROR_CODE.NOT_URLS ||
-                    code ===
-                      UNKNOWN_CODE
-                  ) {
-                    if (
-                      timer.current
-                    ) {
-                      clearTimeout(
-                        timer.current
-                      )
-                    }
-
-                    timer.current =
-                      setTimeout(
-                        () => {
-                          void handleStartRecord(
-                            false
-                          )
-                        },
-
-                        1000 *
-                          streamConfig.interval
-                      )
-
-                    if (isFirst) {
-                      toast({
-                        title:
-                          streamConfig.title,
-
-                        description:
-                          t(
-                            'error.start_record.not_urls'
-                          )
-                      })
-
-                      if (
-                        defaultSettingsConfig
-                          .xizhiKey
-                      ) {
-                        useXizhiToPushNotification({
-                          key:
-                            defaultSettingsConfig
-                              .xizhiKey,
-
-                          title:
-                            streamConfig.title,
-
-                          content:
-                            t(
-                              'error.start_record.not_urls'
-                            )
-                        })
-                      }
-                    }
-
-                    await updateStreamConfig(
-                      {
-                        ...streamConfig,
-
-                        status:
-                          code ===
-                            CRAWLER_ERROR_CODE.NOT_URLS
-                            ? StreamStatus.MONITORING_OFFLINE
-                            : StreamStatus.MONITORING_ERROR
-                      },
-
-                      streamConfig.id
-                    )
-
-                    return
-                  }
-              """
-          )
-
-          new_retry = dedent(
-              """
-                  const isProfileTransientError =
-                    isDouyinProfile &&
-                    [
-                      CRAWLER_ERROR_CODE.TIMEOUT,
-                      CRAWLER_ERROR_CODE.FORBIDDEN,
-                      CRAWLER_ERROR_CODE.REQUEST_TOO_FAST
-                    ].includes(
-                      code
-                    )
-
-                  if (
-                    code ===
-                      CRAWLER_ERROR_CODE.NOT_URLS ||
-                    code ===
-                      UNKNOWN_CODE ||
-                    isProfileTransientError
-                  ) {
-                    const hasError =
-                      code !==
-                      CRAWLER_ERROR_CODE.NOT_URLS
-
-                    if (
-                      hasError
-                    ) {
-                      monitorErrorStreakRef.current +=
-                        1
-                    } else {
-                      monitorErrorStreakRef.current =
-                        0
-                    }
-
-                    scheduleAutoRecordRetry(
-                      hasError
-                    )
-
-                    if (isFirst) {
-                      const messageKey =
-                        code ===
-                          UNKNOWN_CODE
-                          ? 'error.start_record.unknown_error'
-                          : crawlerErrorCodeToI18nMessage(
-                              code,
-                              'error.start_record.'
-                            )
-
-                      toast({
-                        title:
-                          streamConfig.title,
-
-                        description:
-                          t(
-                            messageKey
-                          ),
-
-                        variant:
-                          hasError
-                            ? 'destructive'
-                            : undefined
-                      })
-                    }
-
-                    await updateStreamConfig(
-                      {
-                        ...streamConfig,
-
-                        status:
-                          code ===
-                            CRAWLER_ERROR_CODE.NOT_URLS
-                            ? StreamStatus.MONITORING_OFFLINE
-                            : StreamStatus.MONITORING_ERROR
-                      },
-
-                      streamConfig.id
-                    )
-
-                    return
-                  }
-              """
-          )
-
-          replace_once(
-              operation_path,
-              old_retry,
-              new_retry
-          )
-
-
-          # ============================================================
-          # Upload when second recording callback arrives
-          # ============================================================
-
-          list_path = (
-              "src/renderer/src/components/"
-              "StreamConfigList/"
-              "StreamConfigList.tsx"
-          )
-
-          replace_once(
-              list_path,
-              """
-                  window.api.onStreamRecordEnd(async (id, code, errMsg) => {
-              """,
-              """
-                  window.api.onStreamRecordEnd(async (id, code, errMsg, recordedFiles) => {
-              """
-          )
-
-          replace_once(
-              list_path,
-              """
-                    // 第二次回调，删除当前title
-                    alreadyCallbackOneTimeSet.delete(id)
-
-                    unknownErrorRetryTimesMap[id] = unknownErrorRetryTimesMap[id] || 0
-              """,
-              """
-                    // 第二次回调，开始处理最终录像文件
-                    alreadyCallbackOneTimeSet.delete(id)
-
-                    const webdavConfig =
-                      useDefaultSettingsStore
-                        .getState()
-                        .defaultSettingsConfig
-
-                    const shouldUpload =
-                      Boolean(
-                        webdavConfig
-                          .webdavEnabled
-                      ) &&
-                      Boolean(
-                        webdavConfig
-                          .webdavUrl
-                          ?.trim()
-                      ) &&
-                      Boolean(
-                        webdavConfig
-                          .webdavUsername
-                          ?.trim()
-                      ) &&
-                      Boolean(
-                        webdavConfig
-                          .webdavPassword
-                      ) &&
-                      Boolean(
-                        recordedFiles
-                          ?.length
-                      )
-
-                    if (
-                      shouldUpload
-                    ) {
-                      await updateStreamConfig(
-                        {
-                          ...streamConfig,
-
-                          cloudUploadStatus:
-                            'uploading'
-                        },
-
-                        streamConfig.id
-                      )
-
-                      void (async () => {
-                        try {
-                          const result =
-                            await window.api
-                              .uploadWebdav({
-                                url:
-                                  webdavConfig
-                                    .webdavUrl!
-                                    .trim(),
-
-                                username:
-                                  webdavConfig
-                                    .webdavUsername!
-                                    .trim(),
-
-                                password:
-                                  webdavConfig
-                                    .webdavPassword!,
-
-                                remoteRoot:
-                                  webdavConfig
-                                    .webdavRemoteRoot ||
-                                  '/',
-
-                                streamerName:
-                                  streamConfig.title,
-
-                                files:
-                                  recordedFiles!,
-
-                                deleteAfterUpload:
-                                  Boolean(
-                                    webdavConfig
-                                      .webdavDeleteAfterUpload
-                                  ),
-
-                                retryTimes:
-                                  webdavConfig
-                                    .webdavRetryTimes ||
-                                  3
-                              })
-
-                          const current =
-                            useStreamConfigStore
-                              .getState()
-                              .streamConfigList
-                              .find(
-                                (item) =>
-                                  item.id ===
-                                  streamConfig.id
-                              )
-
-                          if (
-                            current
-                          ) {
-                            await useStreamConfigStore
-                              .getState()
-                              .updateStreamConfig(
-                                {
-                                  ...current,
-
-                                  cloudUploadStatus:
-                                    result.success
-                                      ? 'success'
-                                      : 'error'
-                                },
-
-                                current.id
-                              )
-                          }
-
-                          toast({
-                            title:
-                              streamConfig.title,
-
-                            description:
-                              result.success
-                                ? '云端录像上传成功'
-                                : '云端录像上传失败，本地文件已保留',
-
-                            variant:
-                              result.success
-                                ? undefined
-                                : 'destructive'
-                          })
-                        } catch (
-                          error
-                        ) {
-                          const current =
-                            useStreamConfigStore
-                              .getState()
-                              .streamConfigList
-                              .find(
-                                (item) =>
-                                  item.id ===
-                                  streamConfig.id
-                              )
-
-                          if (
-                            current
-                          ) {
-                            await useStreamConfigStore
-                              .getState()
-                              .updateStreamConfig(
-                                {
-                                  ...current,
-
-                                  cloudUploadStatus:
-                                    'error'
-                                },
-
-                                current.id
-                              )
-                          }
-
-                          toast({
-                            title:
-                              streamConfig.title,
-
-                            description:
-                              error instanceof
-                                Error
-                                ? `云端录像上传失败：${error.message}`
-                                : '云端录像上传失败，本地文件已保留',
-
-                            variant:
-                              'destructive'
-                          })
-                        }
-                      })()
-                    }
-
-                    unknownErrorRetryTimesMap[id] =
-                      unknownErrorRetryTimesMap[id] ||
-                      0
-              """
-          )
-
-
-          # ============================================================
-          # Upload status badge
-          # ============================================================
-
-          replace_once(
-              "src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx",
-              """
-                        {streamConfig.status !== StreamStatus.NOT_STARTED && (
-                          <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
-                        )}
-              """,
-              """
-                        {streamConfig.status !== StreamStatus.NOT_STARTED && (
-                          <Badge variant="outline">{t(streamStatusToLocaleMap[streamConfig.status])}</Badge>
-                        )}
-
-                        {streamConfig.cloudUploadStatus === 'uploading' && (
-                          <Badge variant="outline">
-                            正在上传云盘
-                          </Badge>
-                        )}
-
-                        {streamConfig.cloudUploadStatus === 'success' && (
-                          <Badge variant="outline">
-                            已上传
-                          </Badge>
-                        )}
-
-                        {streamConfig.cloudUploadStatus === 'error' && (
-                          <Badge variant="outline">
-                            上传失败
-                          </Badge>
-                        )}
-              """
-          )
-
 
           print(
-              "V2.10 patch completed successfully."
+              "V2.10 V2 patch complete"
           )
           PY
 
           python3 -m py_compile \
-            /tmp/v210_patch.py
+            /tmp/v210_fix.py
 
           python3 \
-            /tmp/v210_patch.py
+            /tmp/v210_fix.py
 
-      - name: Verify important changes
+      - name: Verify patch
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f \
-            src/main/webdav.ts
+          test -f src/main/webdav.ts
 
           test -f \
             src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx
-
-          grep -q \
-            "https://pan.lansod.cn/dav" \
-            src/renderer/src/store/useDefaultSettingsStore.ts
-
-          grep -q \
-            "TEST_WEBDAV" \
-            src/const.ts
-
-          grep -q \
-            "UPLOAD_WEBDAV" \
-            src/const.ts
 
           grep -q \
             "webdavEnabled" \
@@ -3327,30 +2970,38 @@ jobs:
             type.d.ts
 
           grep -q \
+            "TEST_WEBDAV" \
+            src/const.ts
+
+          grep -q \
+            "UPLOAD_WEBDAV" \
+            src/const.ts
+
+          grep -q \
+            "https://pan.lansod.cn/dav" \
+            src/renderer/src/store/useDefaultSettingsStore.ts
+
+          grep -q \
             "YYYY-MM-DD_HH-mm-ss" \
             src/main/ffmpeg/record.ts
-
-          grep -q \
-            "正在上传云盘" \
-            src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx
-
-          grep -q \
-            "云端存储 / 自动上传" \
-            src/renderer/src/components/NavBar/components/CloudStorageSettings.tsx
 
           grep -q \
             "DOUYIN_PROFILE_CACHE_MS" \
             src/main/crawler/plugins/douyin.js
 
           grep -q \
-            "Math.max(" \
+            "monitorErrorStreakRef" \
             src/renderer/src/components/StreamConfigList/components/OperationBar.tsx
+
+          grep -q \
+            "正在上传云盘" \
+            src/renderer/src/components/StreamConfigList/components/StreamConfigCard.tsx
 
           if grep -q \
             "const isHide = document.hidden" \
             src/renderer/src/lib/utils.ts
           then
-            echo "ERROR: Xizhi foreground restriction still exists"
+            echo "Xizhi foreground restriction still exists"
             exit 1
           fi
 
@@ -3358,34 +3009,33 @@ jobs:
             "const bootstrap =" \
             src/main/crawler/plugins/douyin.js
           then
-            echo "ERROR: Douyin profile bootstrap request still exists"
+            echo "Douyin bootstrap request still exists"
             exit 1
           fi
 
-          echo "Static verification passed."
+          echo "Static checks passed."
 
       - name: TypeScript check
         run: npm run typecheck
 
-      - name: Build application
+      - name: Build
         run: npm run build
 
-      - name: Check Git diff
+      - name: Git diff check
         shell: bash
         run: |
           set -euo pipefail
 
           git diff --check
-
-          echo "===== Changed files ====="
           git status --short
 
-      - name: Commit feature branch
+      - name: Commit changes
         shell: bash
         run: |
           set -euo pipefail
 
           git add \
+            type.d.ts \
             src/const.ts \
             src/main/index.ts \
             src/main/webdav.ts \
@@ -3393,7 +3043,6 @@ jobs:
             src/main/crawler/plugins/douyin.js \
             src/preload/index.ts \
             src/preload/index.d.ts \
-            type.d.ts \
             src/renderer/src/lib/utils.ts \
             src/renderer/src/store/useDefaultSettingsStore.ts \
             src/renderer/src/components/NavBar/components/DefaultSettingSheet.tsx \
@@ -3404,23 +3053,23 @@ jobs:
 
           if git diff --cached --quiet
           then
-            echo "No changes to commit."
+            echo "No changes"
           else
             git commit \
               -m "feat: add WebDAV upload and improve Douyin monitoring"
           fi
 
-      - name: Push tested feature branch
+      - name: Push feature branch
         shell: bash
         run: |
           set -euo pipefail
 
           git push \
-            --force-with-lease \
+            --force \
             origin \
             "$FEATURE_BRANCH"
 
-      - name: Promote only after tests pass
+      - name: Promote tested source
         shell: bash
         run: |
           set -euo pipefail
@@ -3429,43 +3078,23 @@ jobs:
             origin \
             "HEAD:${SOURCE_BRANCH}"
 
-      - name: Write summary
+      - name: Summary
         shell: bash
         run: |
           {
-            echo "# Fideo V2.10"
+            echo "# Fideo V2.10 V2"
             echo ""
-            echo "## WebDAV"
-            echo "- 自动上传录像"
-            echo "- 默认支持小蓝云盘 WebDAV"
-            echo "- 按主播名称创建文件夹"
-            echo "- 录像文件只使用时间命名"
-            echo "- 分段录像自动增加 001 / 002 / 003"
-            echo "- 上传失败自动重试"
-            echo "- 云端文件大小校验"
-            echo "- 校验成功后才允许删除本地录像"
-            echo "- 测试上传按钮"
-            echo "- 主播卡片显示上传状态"
+            echo "✅ 小蓝云盘 WebDAV 自动上传"
+            echo "✅ 按主播名称创建目录"
+            echo "✅ 云端录像仅使用时间命名"
+            echo "✅ 上传完成大小校验"
+            echo "✅ 上传成功后可选删除本地录像"
+            echo "✅ 息知前台/后台均推送"
+            echo "✅ 抖音主页请求降低频率"
+            echo "✅ 抖音主页缓存"
+            echo "✅ 风控自动退避"
+            echo "✅ typecheck"
+            echo "✅ build"
             echo ""
-            echo "## 息知"
-            echo "- 已取消只有后台才推送的限制"
-            echo "- 软件前台和后台均可发送息知"
-            echo ""
-            echo "## 抖音主播主页监控"
-            echo "- 不再每次检测前请求抖音首页"
-            echo "- 主播信息增加短时间缓存"
-            echo "- 主播主页最低 60 秒检测间隔"
-            echo "- 风控、超时、请求过快自动退避"
-            echo "- 最大退避时间 300 秒"
-            echo "- 异常时保持监控，不误判未开播"
-            echo ""
-            echo "## Validation"
-            echo "- Python patch syntax passed"
-            echo "- npm run typecheck passed"
-            echo "- npm run build passed"
-            echo "- git diff --check passed"
-            echo ""
-            echo "原正式版 release.yml 未修改。"
-            echo ""
-            echo "上传成功后删除本地录像默认关闭。"
+            echo "正式 release.yml 未修改"
           } >> "$GITHUB_STEP_SUMMARY"
