@@ -1,0 +1,721 @@
+name: V2.10 Stability Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v210-stability-fix
+  cancel-in-progress: false
+
+env:
+  SOURCE_BRANCH: douyin-v2.8-anchor-monitor-test
+  FIX_BRANCH: v210-stability-fix
+
+jobs:
+  fix:
+    name: Fix and verify V2.10
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout V2.10 source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.15.0"
+          cache: npm
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create safety backup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BACKUP_BRANCH="backup-v210-stability-${GITHUB_RUN_ID}"
+
+          git branch "$BACKUP_BRANCH"
+          git push origin "$BACKUP_BRANCH"
+
+          echo "Backup: $BACKUP_BRANCH"
+
+      - name: Create fix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git checkout -B "$FIX_BRANCH" "$SOURCE_BRANCH"
+
+      - name: Apply stability fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          def read(path):
+              return Path(path).read_text(encoding="utf-8")
+
+          def write(path, text):
+              Path(path).write_text(text, encoding="utf-8")
+
+          def replace_once(text, old, new, name):
+              if old not in text:
+                  raise RuntimeError(
+                      f"Patch marker not found: {name}"
+                  )
+
+              return text.replace(
+                  old,
+                  new,
+                  1
+              )
+
+          # --------------------------------------------------
+          # 1. 测试版版本号
+          # --------------------------------------------------
+
+          package_path = Path("package.json")
+
+          package = json.loads(
+              package_path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          package["version"] = "1.1.11-beta.1"
+
+          package_path.write_text(
+              json.dumps(
+                  package,
+                  ensure_ascii=False,
+                  indent=2
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          # --------------------------------------------------
+          # 2. 抖音直播间请求使用完整登录 Cookie
+          # --------------------------------------------------
+
+          path = "src/main/crawler/plugins/douyin.js"
+          text = read(path)
+
+          old = """  const loginCookie =
+            getCookieWithTtwid(cookie)
+          """
+
+          new = """  const loginCookie =
+            cookie
+              ? String(cookie).trim()
+              : ''
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "Douyin full login cookie"
+          )
+
+          write(path, text)
+
+          # --------------------------------------------------
+          # 3. 抖音登录状态不再用 Cookie 数量误判
+          # --------------------------------------------------
+
+          path = "src/main/douyin-session.ts"
+          text = read(path)
+
+          old = """  const hasSession =
+            cookies.some((cookie) =>
+              authCookieNames.has(cookie.name)
+            ) ||
+            cookies.length >= 5
+          """
+
+          new = """  const hasSession =
+            cookies.some((cookie) =>
+              authCookieNames.has(cookie.name)
+            )
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "Douyin login status"
+          )
+
+          write(path, text)
+
+          # --------------------------------------------------
+          # 4. 录像日志 Cookie 脱敏
+          # --------------------------------------------------
+
+          path = "src/main/ffmpeg/record.ts"
+          text = read(path)
+
+          old = """  writeLog(title, `RecordStream Config: ${JSON.stringify(streamConfig, null, 2)}`)
+          """
+
+          new = """  const safeLogConfig = {
+            ...streamConfig,
+            cookie:
+              streamConfig.cookie
+                ? '[REDACTED]'
+                : ''
+          }
+
+          writeLog(
+            title,
+            `RecordStream Config: ${JSON.stringify(
+              safeLogConfig,
+              null,
+              2
+            )}`
+          )
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "Record log cookie redaction"
+          )
+
+          write(path, text)
+
+          # --------------------------------------------------
+          # 5. 启动时清理异常残留运行状态
+          # --------------------------------------------------
+
+          path = "src/renderer/src/store/useStreamConfigStore.ts"
+          text = read(path)
+
+          old = """      if (
+                typeof streamConfig.autoRecord !==
+                'boolean'
+              ) {
+                shouldUpdate = true
+                streamConfig.autoRecord = true
+              }
+
+              return streamConfig
+          """
+
+          new = """      if (
+                typeof streamConfig.autoRecord !==
+                'boolean'
+              ) {
+                shouldUpdate = true
+                streamConfig.autoRecord = true
+              }
+
+              /*
+               * 录制、监控、转码和上传状态都属于运行时状态。
+               * 如果程序异常退出，旧状态不能在下次启动时继续显示。
+               */
+              if (
+                streamConfig.status !== 0
+              ) {
+                shouldUpdate = true
+                streamConfig.status = 0
+              }
+
+              if (
+                streamConfig.cloudUploadStatus ===
+                'uploading'
+              ) {
+                shouldUpdate = true
+                streamConfig.cloudUploadStatus = undefined
+              }
+
+              return streamConfig
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "Reset runtime state"
+          )
+
+          write(path, text)
+
+          # --------------------------------------------------
+          # 6. 主进程外部 URL 白名单
+          # --------------------------------------------------
+
+          path = "src/main/index.ts"
+          text = read(path)
+
+          marker = """async function checkUpdate() {
+          """
+
+          helper = """function openSafeExternalUrl(
+            value: string
+          ) {
+            try {
+              const url =
+                new URL(value)
+
+              if (
+                url.protocol !== 'https:' &&
+                url.protocol !== 'http:'
+              ) {
+                return false
+              }
+
+              void shell.openExternal(
+                url.toString()
+              )
+
+              return true
+            } catch {
+              return false
+            }
+          }
+
+          async function checkUpdate() {
+          """
+
+          text = replace_once(
+              text,
+              marker,
+              helper,
+              "Safe external URL helper"
+          )
+
+          old = """  mainWindow.webContents.setWindowOpenHandler((details) => {
+              shell.openExternal(details.url)
+              return { action: 'deny' }
+            })
+          """
+
+          new = """  mainWindow.webContents.setWindowOpenHandler((details) => {
+              openSafeExternalUrl(
+                details.url
+              )
+
+              return {
+                action: 'deny'
+              }
+            })
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "Window external URL"
+          )
+
+          old = """  ipcMain.handle(NAV_BY_DEFAULT_BROWSER, (_, url: string) => {
+              shell.openExternal(url)
+            })
+          """
+
+          new = """  ipcMain.handle(
+              NAV_BY_DEFAULT_BROWSER,
+              (_, url: string) => {
+                return openSafeExternalUrl(
+                  url
+                )
+              }
+            )
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "IPC external URL"
+          )
+
+          # --------------------------------------------------
+          # 7. WebDAV 上传主进程串行队列
+          # --------------------------------------------------
+
+          marker = """export const writeLog = writeLogWrapper(app.getPath('userData'))
+          """
+
+          replacement = """export const writeLog = writeLogWrapper(app.getPath('userData'))
+
+          let webdavUploadQueue:
+            Promise<void> =
+            Promise.resolve()
+
+          async function enqueueWebdavUpload(
+            request: Parameters<typeof uploadWebdav>[0]
+          ) {
+            let resolveResult:
+              (
+                value:
+                  Awaited<
+                    ReturnType<
+                      typeof uploadWebdav
+                    >
+                  >
+              ) => void
+
+            let rejectResult:
+              (
+                reason?: unknown
+              ) => void
+
+            const resultPromise =
+              new Promise<
+                Awaited<
+                  ReturnType<
+                    typeof uploadWebdav
+                  >
+                >
+              >(
+                (
+                  resolve,
+                  reject
+                ) => {
+                  resolveResult =
+                    resolve
+
+                  rejectResult =
+                    reject
+                }
+              )
+
+            webdavUploadQueue =
+              webdavUploadQueue
+                .catch(() => {
+                  // 前一个上传失败不能阻塞后续任务
+                })
+                .then(
+                  async () => {
+                    try {
+                      const result =
+                        await uploadWebdav(
+                          request
+                        )
+
+                      resolveResult(
+                        result
+                      )
+                    } catch (
+                      error
+                    ) {
+                      rejectResult(
+                        error
+                      )
+                    }
+                  }
+                )
+
+            return await resultPromise
+          }
+          """
+
+          text = replace_once(
+              text,
+              marker,
+              replacement,
+              "WebDAV queue"
+          )
+
+          old = """  ipcMain.handle(
+              UPLOAD_WEBDAV,
+              async (_, request) => {
+                return await uploadWebdav(
+                  request
+                )
+              }
+            )
+          """
+
+          new = """  ipcMain.handle(
+              UPLOAD_WEBDAV,
+              async (_, request) => {
+                return await enqueueWebdavUpload(
+                  request
+                )
+              }
+            )
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "WebDAV queue handler"
+          )
+
+          write(path, text)
+
+          # --------------------------------------------------
+          # 8. WebDAV 禁止不安全的 HTTP
+          # --------------------------------------------------
+
+          path = "src/main/webdav.ts"
+          text = read(path)
+
+          marker = """const cleanBaseUrl = (
+            value: string
+          ) =>
+          """
+
+          replacement = """const validateWebdavUrl = (
+            value: string
+          ) => {
+            const trimmed =
+              String(
+                value || ''
+              ).trim()
+
+            let parsed:
+              URL
+
+            try {
+              parsed =
+                new URL(
+                  trimmed
+                )
+            } catch {
+              throw new Error(
+                'WebDAV 地址格式无效'
+              )
+            }
+
+            if (
+              parsed.protocol !==
+              'https:'
+            ) {
+              throw new Error(
+                'WebDAV 地址必须使用 HTTPS'
+              )
+            }
+
+            return trimmed
+          }
+
+          const cleanBaseUrl = (
+            value: string
+          ) =>
+          """
+
+          text = replace_once(
+              text,
+              marker,
+              replacement,
+              "WebDAV HTTPS validation helper"
+          )
+
+          old = """  const config:
+            IWebdavConfig = {
+            url:
+              request.url,
+
+            username:
+              request.username,
+
+            password:
+              request.password,
+
+            remoteRoot:
+              request.remoteRoot
+          }
+          """
+
+          new = """  const config:
+            IWebdavConfig = {
+            url:
+              validateWebdavUrl(
+                request.url
+              ),
+
+            username:
+              request.username,
+
+            password:
+              request.password,
+
+            remoteRoot:
+              request.remoteRoot
+          }
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "WebDAV upload HTTPS"
+          )
+
+          old = """export async function testWebdav(
+            config: IWebdavConfig
+          ) {
+            try {
+          """
+
+          new = """export async function testWebdav(
+            config: IWebdavConfig
+          ) {
+            try {
+              config = {
+                ...config,
+
+                url:
+                  validateWebdavUrl(
+                    config.url
+                  )
+              }
+          """
+
+          text = replace_once(
+              text,
+              old,
+              new,
+              "WebDAV test HTTPS"
+          )
+
+          write(path, text)
+
+          print(
+              "V2.10 stability patch completed."
+          )
+          PY
+
+      - name: Static verification
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -q '"version": "1.1.11-beta.1"' package.json
+
+          grep -q "String(cookie).trim()" \
+            src/main/crawler/plugins/douyin.js
+
+          if grep -q "cookies.length >= 5" \
+            src/main/douyin-session.ts
+          then
+            echo "ERROR: old Douyin login fallback still exists"
+            exit 1
+          fi
+
+          grep -q "\[REDACTED\]" \
+            src/main/ffmpeg/record.ts
+
+          grep -q "cloudUploadStatus = undefined" \
+            src/renderer/src/store/useStreamConfigStore.ts
+
+          grep -q "openSafeExternalUrl" \
+            src/main/index.ts
+
+          grep -q "enqueueWebdavUpload" \
+            src/main/index.ts
+
+          grep -q "WebDAV 地址必须使用 HTTPS" \
+            src/main/webdav.ts
+
+          git diff --check
+
+          echo "Static verification passed."
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build application
+        run: npm run build
+
+      - name: Check final diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff --check
+
+          echo "===== Changed files ====="
+          git status --short
+
+          echo ""
+          echo "===== Diff summary ====="
+          git diff --stat
+
+      - name: Commit verified fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add \
+            package.json \
+            src/main/index.ts \
+            src/main/webdav.ts \
+            src/main/douyin-session.ts \
+            src/main/ffmpeg/record.ts \
+            src/main/crawler/plugins/douyin.js \
+            src/renderer/src/store/useStreamConfigStore.ts
+
+          if git diff --cached --quiet
+          then
+            echo "No changes to commit."
+          else
+            git commit \
+              -m "fix: harden V2.10 monitoring and upload stability"
+          fi
+
+      - name: Push verified fix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            --force \
+            origin \
+            "$FIX_BRANCH"
+
+      - name: Promote only after checks pass
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            origin \
+            "HEAD:${SOURCE_BRANCH}"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "# V2.10 稳定性修复"
+            echo ""
+            echo "✅ 抖音完整登录 Cookie"
+            echo "✅ 抖音登录状态判断修正"
+            echo "✅ 录像日志 Cookie 脱敏"
+            echo "✅ 异常退出运行状态自动恢复"
+            echo "✅ WebDAV 串行上传队列"
+            echo "✅ WebDAV 强制 HTTPS"
+            echo "✅ 外部链接 http/https 白名单"
+            echo "✅ 测试版本 1.1.11-beta.1"
+            echo "✅ TypeScript 检查"
+            echo "✅ Application Build"
+            echo ""
+            echo "只有全部检查通过后才更新测试源码分支。"
+          } >> "$GITHUB_STEP_SUMMARY"
