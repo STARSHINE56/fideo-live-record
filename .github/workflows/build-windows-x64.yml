@@ -42,7 +42,22 @@ jobs:
         run: npm run build
 
       - name: Package Windows x64 installer
-        run: npx electron-builder --win nsis --x64
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Package unpacked Windows x64
+        run: npx electron-builder --win --x64 --dir --publish never
+
+      - name: Compress unpacked app
+        shell: pwsh
+        run: |
+          if (Test-Path "dist/win-unpacked") {
+            Compress-Archive `
+              -Path "dist/win-unpacked/*" `
+              -DestinationPath "dist/fideo-v2.10-win-unpacked.zip" `
+              -Force
+          } else {
+            throw "dist/win-unpacked not found"
+          }
 
       - name: Show build outputs
         shell: pwsh
@@ -50,10 +65,18 @@ jobs:
           Get-ChildItem -Path dist -Recurse |
             Select-Object FullName, Length
 
-      - name: Upload Windows x64 installer
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: fideo-v2.10-windows-x64-test
+          name: fideo-v2.10-windows-x64-installer
           path: dist/*-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload unpacked app
+        uses: actions/upload-artifact@v4
+        with:
+          name: fideo-v2.10-win-unpacked
+          path: dist/fideo-v2.10-win-unpacked.zip
           if-no-files-found: error
           retention-days: 7
